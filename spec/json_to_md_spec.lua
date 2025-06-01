@@ -18,6 +18,15 @@ describe("[#parse #json_to_md] json_to_md function tests", function()
       local json_str = read_file(json_files[i])
       local expected_md = read_file(md_files[i])
       local output_md = json_to_md(json_str)
+      if expected_md ~= output_md then
+        local f_expected = io.open("expected.md", "w")
+        f_expected:write(expected_md)
+        f_expected:close()
+
+        local f_output = io.open("output.md", "w")
+        f_output:write(output_md)
+        f_output:close()
+      end
       assert.are.equal(expected_md, output_md)
     end)
   end

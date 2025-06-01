@@ -39,26 +39,63 @@ M.json_to_md = function(json_str)
   end
 
   -- Validate "messages" and roles
-  local valid_roles = { assistant = true, developer = true, system = true, tool = true, user = true }
+  local valid_roles = {
+    assistant = true,
+    developer = true,
+    system = true,
+    tool = true,
+    user = true,
+    ["function"] = true,
+  }
   for _, msg in ipairs(messages) do
-    if type(msg) ~= "table" or not msg.role or not msg.content then
-      log.debug("Each message must be a table with 'role' and 'content' keys")
-      error("Each message must be a table with 'role' and 'content' keys")
+    if type(msg) ~= "table" or not msg.role then
+      log.debug("Each message must be a table with a 'role' key")
+      error("Each message must be a table with a 'role' key")
     end
     if not valid_roles[msg.role] then
       log.debug("Invalid role: " .. tostring(msg.role))
       error("Invalid role: " .. tostring(msg.role))
     end
+
+    -- Require content or function_call or name (if role function)
+    if msg.content == nil and msg.function_call == nil and not (msg.role == "function" and msg.name) then
+      log.debug(
+        "Each message must have 'content', or 'function_call', or 'name' (for role=function): " .. vim.inspect(msg)
+      )
+      error("Each message must have 'content', or 'function_call', or 'name' (for role=function)")
+    end
   end
 
   --- Parse metadata as yaml
   json_data["messages"] = nil
+  json_data["functions"] = nil
   local metadata_str = yaml.encode(json_data):gsub("^%s+", ""):gsub("%s+$", "")
 
   --- Generate markdown string
   local md_str = "---\n" .. metadata_str .. "\n---\n"
   for _, msg in ipairs(messages) do
-    md_str = md_str .. "\n# " .. msg.role .. "\n\n" .. msg.content .. "\n\n---\n"
+    md_str = md_str .. "\n# " .. msg.role .. "\n\n"
+
+    -- Add function_call if present
+    if msg.function_call then
+      md_str = md_str .. "### function_call: " .. tostring(msg.function_call.name) .. "\n\n"
+      -- Pretty-print arguments, assuming JSON string - indent nicely
+      local args = msg.function_call.arguments or ""
+      -- indent the arguments block for markdown code block
+      md_str = md_str .. "```json\n" .. args .. "\n```\n\n"
+    end
+
+    -- Add function name if present and role is "function"
+    if msg.role == "function" and msg.name then
+      md_str = md_str .. "### function: " .. tostring(msg.name) .. "\n\n"
+    end
+
+    -- Add content if present
+    if msg.content then
+      md_str = md_str .. msg.content .. "\n\n"
+    end
+
+    md_str = md_str .. "---\n"
   end
   md_str = md_str:gsub("%s+$", "")
 
@@ -99,7 +136,6 @@ end
 M.md_to_json = function(md_str)
   -- Extract front matter and content using pattern matching
   local front_matter, content = md_str:match("^%-%-%-\n(.-)\n%-%-%-(.*)$")
-
   if not front_matter or #front_matter == 0 then
     log.debug("Cannot parse Markdown string")
     error("Cannot parse Markdown string")
@@ -111,8 +147,6 @@ M.md_to_json = function(md_str)
     log.debug("Cannot parse front matter YAML")
     error("Cannot parse front matter YAML")
   end
-
-  log.debug("config: ", config)
 
   if config == nil then
     log.debug("Parsed (yaml) config is nil")
@@ -131,30 +165,93 @@ M.md_to_json = function(md_str)
 
   -- Extract messages using pattern matching
   local messages = {}
-  local roles = { "system", "user", "assistant", "developer", "tool" }
+  local valid_roles = {
+    system = true,
+    user = true,
+    assistant = true,
+    developer = true,
+    tool = true,
+    ["function"] = true,
+  }
+  -- Pattern matches blocks like:
+  -- # <role>
+  --
+  -- <message content>
+  --
+  -- ---
+  -- Including multiline content greedily (.-)
   local pattern = "\n# (%w+)\n\n(.-)\n\n%-%-%-"
 
-  -- Parse each message block ending with ---
   for role, msg_content in content:gmatch(pattern) do
-    if vim.tbl_contains(roles, role) then
-      table.insert(messages, {
-        role = role,
-        content = msg_content,
-      })
-    else
+    if not valid_roles[role] then
       log.debug("Invalid role: " .. role)
       error("Invalid role: " .. role)
     end
-  end
 
-  log.debug("messages: ", messages)
+    -- Prepare message table
+    local msg = {
+      role = role,
+    }
+
+    local content_trim = msg_content:gsub("^%s+", ""):gsub("%s+$", "")
+
+    -- Try to extract function_call block
+    -- Pattern:
+    -- ### function_call: <name>
+    --
+    -- ```json
+    -- {json arguments}
+    -- ```
+    --
+    -- This block may appear anywhere but normally at start of content if exists
+    local func_call_name, func_call_args = content_trim:match("### function_call:%s*(%S+)%s-```json\n(.-)```")
+
+    if func_call_name and func_call_args then
+      -- Remove the function_call block from content
+      -- Replace the entire function_call block with empty string
+      local cleaned_content = content_trim
+        :gsub("### function_call:%s*" .. vim.pesc(func_call_name) .. "%s-```json\n.-```%s*", "")
+        :gsub("^%s+", "")
+        :gsub("%s+$", "")
+
+      -- Assign function_call field
+      msg.function_call = {
+        name = func_call_name,
+        arguments = func_call_args,
+      }
+      -- Remaining content (if any) goes to content
+      if #cleaned_content > 0 then
+        msg.content = cleaned_content
+      end
+    else
+      -- No function_call block, try function name block (only for role "function")
+      if role == "function" then
+        -- Pattern:
+        -- ### function: <name>
+        -- [newline]
+        -- <content>
+        local func_name, rest_content = content_trim:match("### function:%s*(%S+)%s*\n(.+)")
+        if func_name then
+          msg.name = func_name
+          msg.content = rest_content and rest_content:gsub("^%s+", "") or ""
+        else
+          -- No function name detected, treat whole as content
+          msg.content = content_trim
+        end
+      else
+        -- For other roles, just content
+        msg.content = content_trim
+      end
+    end
+
+    table.insert(messages, msg)
+  end
 
   if #messages == 0 then
     log.debug("No messages found")
     error("No messages found")
   end
 
-  -- Combine config and messages
   config.messages = messages
 
   -- Encode to JSON string

@@ -22,7 +22,18 @@ describe("[#parse #md_to_json] md_to_json function tests", function()
       local expected_json = read_file(json_files[i])
       local output_json = md_to_json(md_str)
       assert(output_json ~= nil)
-      assert.are.same(vim.json.decode(expected_json), vim.json.decode(output_json))
+      local expected, output = vim.json.decode(expected_json), vim.json.decode(output_json)
+      local ok = vim.deep_equal(expected, output)
+      if not ok then
+        local function write_to_file(filename, content)
+          local f = io.open(filename, "w")
+          f:write(content)
+          f:close()
+        end
+        write_to_file("expected.json", expected_json)
+        write_to_file("output.json", output_json)
+      end
+      assert(ok)
     end)
   end
 
