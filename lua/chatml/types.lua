@@ -29,16 +29,71 @@
 
 -- lua/chatml/parse.lua ---------------------------------------------------------
 
+---@class ChatMLMessage
+---@field role string
+---@field content? string
+---@field function_call? ChatMLFunctionCall
+---@field name? string
+
+---@class ChatMLFunctionCall
+---@field name string
+---@field arguments string
+
+---@class ChatMLRequest
+---@field model string
+---@field messages ChatMLMessage[]
+---@field functions? table[]
+---@field [string] any
+
 ---@class ChatMLParse
----@field json_to_md fun(json_str: string): string|nil
----@field json_buf_to_md_buf fun(in_buf: integer, out_buf: integer?): integer|nil
----@field md_to_json fun(md_str: string): string|nil
----@field md_buf_to_json_buf fun(in_buf: integer, out_buf: integer?): integer|nil
+---@field json_to_md fun(json_str: string): string
+---@field json_to_md_pure fun(json_str: string): string?, string?
+---@field json_buf_to_md_buf fun(in_buf: integer, out_buf: integer?): integer?
+---@field md_to_json fun(md_str: string): string
+---@field md_to_json_pure fun(md_str: string): string?, string?
+---@field md_buf_to_json_buf fun(in_buf: integer, out_buf: integer?): integer?
 
 -- lua/chatml/llm.lua -----------------------------------------------------------
 
+---@class ChatCompletionMessage
+---@field role string
+---@field content? string
+---@field function_call? ChatMLFunctionCall
+---@field name? string
+
+---@class ChatCompletionChoice
+---@field message? ChatCompletionMessage
+---@field delta? ChatCompletionMessage
+---@field finish_reason? string
+
+---@class ChatCompletionResponse
+---@field choices ChatCompletionChoice[]
+
+---@class StreamingState
+---@field last_role string
+---@field func_call_name? string
+---@field func_call_args string
+
 ---@class ChatMLLLM
----@field client AiClient: llm client used to set request to provider
+---@field client AiClient llm client used to set request to provider
 ---@field chat_completion fun(in_buf: integer, out_buf: integer?): nil
+---@field on_chat_completion fun(out_buf: integer): function
+---@field on_chat_completion_chunk fun(out_buf: integer): function
+
+-- Tool-related types
+
+---@class ChatMLTool
+---@field server_name string
+---@field name string
+---@field description string
+---@field inputSchema table
+
+---@class ChatMLToolResponse
+---@field result? table
+---@field error? string
+
+---@class ChatMLToolContent
+---@field text? string
+---@field [string] any
 
 ---------------------------------------------------------------------------------

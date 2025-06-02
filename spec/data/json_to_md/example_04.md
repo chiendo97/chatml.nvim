@@ -16,7 +16,6 @@ Get me the current weather in New York.
 {
   "location": "New York"
 }
-
 ```
 
 ---
