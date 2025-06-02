@@ -93,7 +93,7 @@ local function on_chat_completion_chunk(out_buf)
     -- write role header if present and changed
     local role = delta.role
     if role ~= nil and role ~= "" and last_role ~= role then
-      local role_lines = { "", "# " .. role, "", "" }
+      local role_lines = { "", "# " .. role, "" }
       vim.api.nvim_buf_set_lines(out_buf, -1, -1, true, role_lines)
       last_role = role
     end
@@ -125,17 +125,15 @@ local function on_chat_completion_chunk(out_buf)
     end
 
     local finish_reason = choice.finish_reason
-    if finish_reason == "stop" then
+    if finish_reason == "stop" or finish_reason == "function_call" then
       -- if we have accumulated function_call data, render it now
       if func_call_name ~= nil and func_call_args ~= "" then
         local func_lines = {
-          "",
           "### function_call: " .. func_call_name,
           "",
           "```json",
           func_call_args,
           "```",
-          "",
         }
         vim.api.nvim_buf_set_lines(out_buf, -1, -1, true, func_lines)
       end
@@ -149,7 +147,7 @@ local function on_chat_completion_chunk(out_buf)
       func_call_args = ""
     elseif finish_reason ~= nil then
       -- something else: error maybe
-      vim.notify("An error occured during text generation.", vim.log.levels.ERROR)
+      vim.notify("An error occured during text generation. Reason: " .. finish_reason, vim.log.levels.ERROR)
     end
   end
 end
@@ -187,7 +185,7 @@ M.chat_completion = function(in_buf, out_buf)
   request["functions"] = request["functions"] or {}
   for _, tool in ipairs(tools) do
     table.insert(request["functions"], {
-      name = tool.name,
+      name = string.format("%s-%s", tool.server_name, tool.name),
       description = tool.description,
       parameters = tool.inputSchema,
     })
@@ -203,10 +201,8 @@ M.chat_completion = function(in_buf, out_buf)
 
   -- New part: handle last assistant.function_call if any
   local last_msg = request.messages[#request.messages]
-  vim.notify("Last message in request: " .. vim.inspect(last_msg), vim.log.levels.DEBUG)
-
   if last_msg and last_msg.role == "assistant" and last_msg.function_call then
-    local func_name = last_msg.function_call.name
+    local server_name, func_name = last_msg.function_call.name:match("([^/]+)-([^/]+)")
     local func_args_str = last_msg.function_call.arguments or "{}"
     local func_args_table = nil
     local decode_ok, decoded_args = pcall(vim.json.decode, func_args_str)
@@ -216,7 +212,7 @@ M.chat_completion = function(in_buf, out_buf)
       func_args_table = {}
     end
 
-    local response, err = hub:call_tool("neovim", func_name, func_args_table)
+    local response, err = hub:call_tool(server_name, func_name, func_args_table)
     local result_content = "{}" -- default empty json object string
 
     if err then
@@ -229,17 +225,17 @@ M.chat_completion = function(in_buf, out_buf)
         local first_content = response.result.content[1]
         if first_content and first_content.text then
           -- Encode the text string as JSON string value (quoted)
-          result_content = vim.json.encode(first_content.text)
+          result_content = string.format("````\n%s\n````", first_content.text)
         else
           -- fallback: encode whole content object as JSON string
-          result_content = vim.json.encode(response.result.content)
+          result_content = string.format("````\n%s\n````", response.result.content)
         end
       end
     end
 
     table.insert(request.messages, {
       role = "function",
-      name = func_name,
+      name = string.format("%s-%s", server_name, func_name),
       content = result_content,
     })
 

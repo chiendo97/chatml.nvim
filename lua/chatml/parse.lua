@@ -81,6 +81,7 @@ M.json_to_md = function(json_str)
       md_str = md_str .. "### function_call: " .. tostring(msg.function_call.name) .. "\n\n"
       -- Pretty-print arguments, assuming JSON string - indent nicely
       local args = msg.function_call.arguments or ""
+      args = args:gsub("%s+$", "")
       -- indent the arguments block for markdown code block
       md_str = md_str .. "```json\n" .. args .. "\n```\n\n"
     end
