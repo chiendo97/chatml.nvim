@@ -132,34 +132,52 @@ local function format_tool_result(response, err)
   return "{}"
 end
 
+-- Helper to invoke tool async and append result to output buffer
+local function async_call_tool_and_append(server_name, func_name, func_args, out_buf)
+  hub:call_tool(server_name, func_name, func_args, {
+    return_text = true,
+    callback = function(response, err)
+      local result_content = format_tool_result(response, err)
+      if err then
+        vim.notify("Tool call error: " .. err, vim.log.levels.ERROR)
+      end
+
+      -- Append function role message with tool result to output buffer
+      local func_name_lines = format_function_name_lines(string.format("%s-%s", server_name, func_name))
+      local content_lines = split_content_to_lines(result_content)
+
+      -- Append as new message with role 'function' and proper markdown formatting
+      vim.schedule(function() -- schedule because callback may run outside main loop
+        vim.api.nvim_buf_set_lines(out_buf, -1, -1, true, { "", "# assistant", "" })
+        vim.api.nvim_buf_set_lines(out_buf, -1, -1, true, func_name_lines)
+        vim.api.nvim_buf_set_lines(out_buf, -1, -1, true, content_lines)
+        vim.api.nvim_buf_set_lines(out_buf, -1, -1, true, { "", "---", "" })
+      end)
+    end,
+  })
+end
+
 ---Handle function call in last assistant message
 ---@param request ChatMLRequest The chat completion request
+---@param buf integer Buffer number to append tool result
 ---@return ChatMLRequest request The modified request
----@return string? updated_md_str Updated markdown string if function was called
-local function handle_last_function_call(request)
+---@return boolean tool_called Whether a tool was called
+local function handle_last_function_call(request, buf)
   local last_msg = request.messages[#request.messages]
   if not (last_msg and last_msg.role == "assistant" and last_msg.function_call) then
-    return request, nil
+    return request, false
   end
 
-  local server_name, func_name = parse_tool_name(last_msg.function_call.name)
-  local func_args = parse_function_arguments(last_msg.function_call.arguments)
+  local server_name, func_name_no_srv = parse_tool_name(last_msg.function_call.name)
 
-  local response, err = hub:call_tool(server_name, func_name, func_args)
-  local result_content = format_tool_result(response, err)
+  async_call_tool_and_append(
+    server_name,
+    func_name_no_srv,
+    parse_function_arguments(last_msg.function_call.arguments),
+    buf
+  )
 
-  if err then
-    vim.notify("Tool call error: " .. err, vim.log.levels.ERROR)
-  end
-
-  table.insert(request.messages, {
-    role = "function",
-    name = string.format("%s-%s", server_name, func_name),
-    content = result_content,
-  })
-
-  local updated_md_str = parse.json_to_md(vim.json.encode(request, { luanil = { object = true, array = true } }))
-  return request, updated_md_str
+  return request, true
 end
 
 ---Prepare chat completion request from markdown buffer
@@ -180,11 +198,7 @@ local function prepare_chat_request(in_buf)
   local tools = hub:get_tools()
   request = add_tools_to_request(request, tools)
 
-  -- Handle function calls
-  local updated_md_str
-  request, updated_md_str = handle_last_function_call(request)
-
-  return request, updated_md_str or md_str
+  return request, md_str
 end
 
 -- Callback creators for external dependencies
@@ -206,10 +220,18 @@ local function create_chat_completion_callback(out_buf)
     end
 
     if message.function_call then
+      -- Display the function call in markdown as before
       local func_name = message.function_call.name or ""
       local args = message.function_call.arguments or ""
       local func_lines = format_function_call_lines(func_name, args)
       vim.api.nvim_buf_set_lines(out_buf, -1, -1, true, func_lines)
+
+      -- Parse tool name and arguments
+      local server_name, func_name_no_srv = parse_tool_name(func_name)
+      local func_args_table = parse_function_arguments(args)
+
+      -- Call tool asynchronously to get the result
+      async_call_tool_and_append(server_name, func_name_no_srv, func_args_table, out_buf)
     end
 
     if role == "function" and message.name then
@@ -303,7 +325,19 @@ M.chat_completion = function(in_buf, out_buf)
   end
 
   local request, md_str = prepare_chat_request(in_buf)
+
   out_buf = out_buf or in_buf
+
+  -- Handle function calls
+  local is_tool_used
+  request, is_tool_used = handle_last_function_call(request, out_buf)
+
+  if is_tool_used then
+    -- If a tool was called, we don't need to send the request to the LLM
+    log.debug("Tool was called, skipping LLM request")
+    vim.notify("Tool was called, skipping LLM request", vim.log.levels.INFO)
+    return
+  end
 
   vim.api.nvim_buf_set_lines(out_buf, 0, -1, false, vim.split(md_str, "\n"))
 
