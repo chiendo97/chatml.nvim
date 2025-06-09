@@ -1,7 +1,7 @@
 local parse = require("chatml.parse")
 local ai = require("ai")
 local hub = require("mcphub").get_hub_instance()
-local progress = require("fidget.progress")
+local progress_manager = require("chatml.progress_manager")
 
 ---@class ChatMLLLM
 local M = {}
@@ -259,20 +259,24 @@ end
 ---@param func_name string Function name
 ---@return function callback Tool result callback
 local function create_tool_result_callback(out_buf, server_name, func_name)
-  local handle = progress.handle.create({
-    title = "Tool Call - [" .. out_buf .. "]",
-    message = "Starting...",
-    percentage = 0,
-    lsp_client = { name = "chatml.nvim" }, -- fake client name to group the notification
-  })
+  local progress_id = string.format("tool_%s_%s_%d", server_name, func_name, out_buf)
+
+  progress_manager:create_handle(
+    progress_id,
+    string.format("Tool Call: %s-%s", server_name, func_name),
+    string.format("Calling %s on %s server...", func_name, server_name)
+  )
 
   return function(response, err)
-    local result_content = format_tool_result(response, err)
     if err then
+      progress_manager:finish_handle(progress_id, "Tool call failed")
       vim.notify("Tool call error: " .. err, vim.log.levels.ERROR)
-      handle:finish()
+      return
     end
 
+    progress_manager:update_handle(progress_id, "Processing tool response...", 80)
+
+    local result_content = format_tool_result(response, err)
     local func_name_lines = format_function_name_lines(string.format("%s-%s", server_name, func_name))
     local content_lines = split_content_to_lines(result_content)
 
@@ -282,11 +286,7 @@ local function create_tool_result_callback(out_buf, server_name, func_name)
       append_lines_to_buffer(out_buf, content_lines)
       append_lines_to_buffer(out_buf, { "", "---" })
 
-      handle:report({
-        message = "Tool call completed",
-        percentage = 100,
-      })
-      handle:finish()
+      progress_manager:finish_handle(progress_id, "Tool call completed successfully")
     end)
   end
 end
@@ -370,16 +370,12 @@ end
 ---@return function callback Callback function for chat completion
 local function create_chat_completion_callback(out_buf)
   local last_role = ""
-  -- Create a new progress handle
-  local handle = progress.handle.create({
-    title = "Chat Completion",
-    message = "Starting...",
-    percentage = 0,
-    lsp_client = { name = "chatml.nvim" }, -- fake client name to group the notification
-  })
+  local progress_id = string.format("chat_completion_%d", out_buf)
+
+  progress_manager:create_handle(progress_id, "Chat Completion", "Waiting for LLM response...")
 
   return function(chat_completion_obj)
-    handle.message = "Processing response..."
+    progress_manager:update_handle(progress_id, "Processing response...", 50)
 
     local message = chat_completion_obj.choices[1].message
     local role = message.role
@@ -390,11 +386,15 @@ local function create_chat_completion_callback(out_buf)
       last_role = role
     end
 
+    progress_manager:update_handle(progress_id, "Formatting response...", 70)
+
     if message.function_call then
       local func_name = message.function_call.name or ""
       local args = message.function_call.arguments or ""
       local func_lines = format_function_call_lines(func_name, args)
       append_lines_to_buffer(out_buf, func_lines)
+
+      progress_manager:update_handle(progress_id, "Executing function call...", 80)
 
       local server_name, func_name_no_srv, func_args = extract_function_call_info(message)
       if server_name and func_name_no_srv then
@@ -414,11 +414,7 @@ local function create_chat_completion_callback(out_buf)
     end
 
     append_lines_to_buffer(out_buf, { "---" })
-    handle:report({
-      message = "Chat completion done",
-      percentage = 100,
-    })
-    handle:finish()
+    progress_manager:finish_handle(progress_id, "Chat completion finished")
   end
 end
 
@@ -427,34 +423,41 @@ end
 ---@return function callback Callback function for chat completion chunks
 local function create_streaming_callback(out_buf)
   local state = create_streaming_state()
-  local handle = progress.handle.create({
-    title = "Chat Completion Stream - [" .. out_buf .. "]",
-    message = "Starting...",
-    percentage = 0,
-    lsp_client = { name = "chatml.nvim" }, -- fake client name to group the notification
-  })
+  local progress_id = string.format("chat_stream_%d", out_buf)
+
+  progress_manager:create_handle(progress_id, "Chat Completion Stream", "Starting stream...")
+
+  local chunk_count = 0
+  local content_length = 0
 
   return function(chat_completion_chunk_obj)
-    handle:report({
-      message = "Processing chunk...",
-    })
+    chunk_count = chunk_count + 1
 
     local choice = chat_completion_chunk_obj.choices[1]
     local delta = choice.delta
 
     local role = delta.role
     if role ~= nil and role ~= "" and state.last_role ~= role then
+      progress_manager:update_handle(progress_id, string.format("Processing %s response...", role), nil)
       local role_lines = format_role_header(role)
       append_lines_to_buffer(out_buf, role_lines)
       state.last_role = role
     end
 
     if delta.function_call then
+      progress_manager:update_handle(progress_id, "Receiving function call...", nil)
       update_function_call_state(state, delta.function_call)
       return
     end
 
     if delta.content then
+      content_length = content_length + #delta.content
+      progress_manager:update_handle(
+        progress_id,
+        string.format("Streaming content... (%d chars, %d chunks)", content_length, chunk_count),
+        nil
+      )
+
       local lines = split_content_to_lines(delta.content)
       local last_line, last_column = get_buffer_last_position(out_buf)
       insert_text_at_position(out_buf, last_line, last_column, lines)
@@ -463,24 +466,21 @@ local function create_streaming_callback(out_buf)
     local finish_reason = choice.finish_reason
     if finish_reason == "stop" or finish_reason == "function_call" then
       if state.func_call_name ~= nil and state.func_call_args ~= "" then
+        progress_manager:update_handle(progress_id, "Finalizing function call...", 90)
         local func_lines = format_function_call_lines(state.func_call_name, state.func_call_args)
         append_lines_to_buffer(out_buf, func_lines)
       end
 
       append_lines_to_buffer(out_buf, { "", "---" })
-      vim.notify("Done.", vim.log.levels.INFO)
+      progress_manager:finish_handle(
+        progress_id,
+        string.format("Stream completed (%d chunks, %d chars)", chunk_count, content_length)
+      )
 
       reset_function_call_state(state)
     elseif finish_reason ~= nil then
+      progress_manager:finish_handle(progress_id, "Stream failed: " .. finish_reason)
       vim.notify("An error occured during text generation. Reason: " .. finish_reason, vim.log.levels.ERROR)
-    end
-
-    if finish_reason ~= nil then
-      handle:report({
-        message = "Chat completion stream done",
-        percentage = 100,
-      })
-      handle:finish()
     end
   end
 end
@@ -493,31 +493,48 @@ end
 ---@param in_buf integer Input markdown buffer number
 ---@param out_buf integer? Output markdown buffer number
 M.chat_completion = function(in_buf, out_buf)
+  local main_progress_id = string.format("main_completion_%d", in_buf)
+
+  progress_manager:create_handle(main_progress_id, "Chat Request", "Preparing request...")
+
+  -- Validation
   if not validate_buffer_filetype(in_buf, "markdown") then
+    progress_manager:finish_handle(main_progress_id, "Invalid input buffer")
     vim.notify("Input buffer is not a markdown buffer")
     error("Input buffer is not a markdown buffer")
   end
 
   if out_buf and not validate_buffer_filetype(out_buf, "markdown") then
+    progress_manager:finish_handle(main_progress_id, "Invalid output buffer")
     vim.notify("Output buffer is not a markdown buffer")
     error("Output buffer is not a markdown buffer")
   end
 
+  progress_manager:update_handle(main_progress_id, "Parsing request...", 25)
+
   local request, md_str = prepare_chat_request(in_buf)
   out_buf = out_buf or in_buf
+
+  progress_manager:update_handle(main_progress_id, "Checking for tool calls...", 50)
 
   local is_tool_used
   request, is_tool_used = handle_last_function_call(request, out_buf)
 
   if is_tool_used then
+    progress_manager:finish_handle(main_progress_id, "Tool call initiated")
     vim.notify("Tool was called, skipping LLM request")
     return
   end
+
+  progress_manager:update_handle(main_progress_id, "Sending to LLM...", 75)
 
   replace_buffer_content(out_buf, md_str)
 
   local completion_callback = not request.stream and create_chat_completion_callback(out_buf) or nil
   local streaming_callback = request.stream and create_streaming_callback(out_buf) or nil
+
+  -- Finish main progress since actual completion progress is handled by callbacks
+  progress_manager:finish_handle(main_progress_id, "Request sent to LLM")
 
   M.client:chat_completion_create(request, completion_callback, streaming_callback)
 end
