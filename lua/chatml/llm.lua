@@ -1,7 +1,7 @@
-local log = require("chatml.log")
 local parse = require("chatml.parse")
 local ai = require("ai")
 local hub = require("mcphub").get_hub_instance()
+local progress = require("fidget.progress")
 
 ---@class ChatMLLLM
 local M = {}
@@ -72,8 +72,6 @@ local function add_tools_to_request(request, tools)
   for _, tool in ipairs(tools) do
     table.insert(request["functions"], tool_to_function_def(tool))
   end
-
-  vim.notify(string.format("Added %d tools to request", #request["functions"]), vim.log.levels.INFO)
 
   return request
 end
@@ -261,10 +259,18 @@ end
 ---@param func_name string Function name
 ---@return function callback Tool result callback
 local function create_tool_result_callback(out_buf, server_name, func_name)
+  local handle = progress.handle.create({
+    title = "Tool Call - [" .. out_buf .. "]",
+    message = "Starting...",
+    percentage = 0,
+    lsp_client = { name = "chatml.nvim" }, -- fake client name to group the notification
+  })
+
   return function(response, err)
     local result_content = format_tool_result(response, err)
     if err then
       vim.notify("Tool call error: " .. err, vim.log.levels.ERROR)
+      handle:finish()
     end
 
     local func_name_lines = format_function_name_lines(string.format("%s-%s", server_name, func_name))
@@ -275,6 +281,12 @@ local function create_tool_result_callback(out_buf, server_name, func_name)
       append_lines_to_buffer(out_buf, func_name_lines)
       append_lines_to_buffer(out_buf, content_lines)
       append_lines_to_buffer(out_buf, { "", "---" })
+
+      handle:report({
+        message = "Tool call completed",
+        percentage = 100,
+      })
+      handle:finish()
     end)
   end
 end
@@ -358,9 +370,16 @@ end
 ---@return function callback Callback function for chat completion
 local function create_chat_completion_callback(out_buf)
   local last_role = ""
+  -- Create a new progress handle
+  local handle = progress.handle.create({
+    title = "Chat Completion",
+    message = "Starting...",
+    percentage = 0,
+    lsp_client = { name = "chatml.nvim" }, -- fake client name to group the notification
+  })
 
   return function(chat_completion_obj)
-    vim.notify("chat_completion_obj: " .. vim.inspect(chat_completion_obj), vim.log.levels.DEBUG)
+    handle.message = "Processing response..."
 
     local message = chat_completion_obj.choices[1].message
     local role = message.role
@@ -395,6 +414,11 @@ local function create_chat_completion_callback(out_buf)
     end
 
     append_lines_to_buffer(out_buf, { "---" })
+    handle:report({
+      message = "Chat completion done",
+      percentage = 100,
+    })
+    handle:finish()
   end
 end
 
@@ -403,8 +427,18 @@ end
 ---@return function callback Callback function for chat completion chunks
 local function create_streaming_callback(out_buf)
   local state = create_streaming_state()
+  local handle = progress.handle.create({
+    title = "Chat Completion Stream - [" .. out_buf .. "]",
+    message = "Starting...",
+    percentage = 0,
+    lsp_client = { name = "chatml.nvim" }, -- fake client name to group the notification
+  })
 
   return function(chat_completion_chunk_obj)
+    handle:report({
+      message = "Processing chunk...",
+    })
+
     local choice = chat_completion_chunk_obj.choices[1]
     local delta = choice.delta
 
@@ -440,6 +474,14 @@ local function create_streaming_callback(out_buf)
     elseif finish_reason ~= nil then
       vim.notify("An error occured during text generation. Reason: " .. finish_reason, vim.log.levels.ERROR)
     end
+
+    if finish_reason ~= nil then
+      handle:report({
+        message = "Chat completion stream done",
+        percentage = 100,
+      })
+      handle:finish()
+    end
   end
 end
 
@@ -452,12 +494,12 @@ end
 ---@param out_buf integer? Output markdown buffer number
 M.chat_completion = function(in_buf, out_buf)
   if not validate_buffer_filetype(in_buf, "markdown") then
-    log.debug("Input buffer is not a markdown buffer")
+    vim.notify("Input buffer is not a markdown buffer")
     error("Input buffer is not a markdown buffer")
   end
 
   if out_buf and not validate_buffer_filetype(out_buf, "markdown") then
-    log.debug("Output buffer is not a markdown buffer")
+    vim.notify("Output buffer is not a markdown buffer")
     error("Output buffer is not a markdown buffer")
   end
 
@@ -468,20 +510,14 @@ M.chat_completion = function(in_buf, out_buf)
   request, is_tool_used = handle_last_function_call(request, out_buf)
 
   if is_tool_used then
-    log.debug("Tool was called, skipping LLM request")
-    vim.notify("Tool was called, skipping LLM request", vim.log.levels.INFO)
+    vim.notify("Tool was called, skipping LLM request")
     return
   end
 
   replace_buffer_content(out_buf, md_str)
 
-  log.debug("request: ", request)
-  vim.notify(string.format("Sending request to %s...(%d messages)", M.client.base_url, #request.messages))
-
-  local completion_callback = create_chat_completion_callback(out_buf)
-  local streaming_callback = create_streaming_callback(out_buf)
-
-  vim.notify("Sending chat completion request: " .. vim.inspect(request), vim.log.levels.INFO)
+  local completion_callback = not request.stream and create_chat_completion_callback(out_buf) or nil
+  local streaming_callback = request.stream and create_streaming_callback(out_buf) or nil
 
   M.client:chat_completion_create(request, completion_callback, streaming_callback)
 end
