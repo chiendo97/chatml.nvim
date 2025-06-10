@@ -273,6 +273,59 @@ local function extract_messages_from_markdown(content)
   return messages
 end
 
+---Read file content and return it as string
+---@param filepath string Path to the file to read
+---@return string? content File content or nil if file cannot be read
+---@return string? error Error message if file reading failed
+local function read_file_content(filepath)
+  local file = io.open(filepath, "r")
+  if not file then
+    return nil, "Cannot open file: " .. filepath
+  end
+
+  local content = file:read("*all")
+  file:close()
+
+  if not content then
+    return nil, "Cannot read file content: " .. filepath
+  end
+
+  return content
+end
+
+---Parse file references from markdown content and create user messages
+---@param content string Markdown content
+---@return ChatMLMessage[] file_messages Array of user messages with file content
+local function parse_file_references(content)
+  local file_messages = {}
+
+  -- Pattern to match #file:path lines
+  for file_path in content:gmatch("\n?%-?%s*#file:([^\n]+)") do
+    file_path = file_path:gsub("^%s+", ""):gsub("%s+$", "") -- trim whitespace
+
+    local file_content, err = read_file_content(file_path)
+    if file_content then
+      local message_content = string.format("#file:%s\n````\n%s\n````", file_path, file_content)
+      table.insert(file_messages, {
+        role = "user",
+        content = message_content,
+      })
+    else
+      -- If file cannot be read, still create a message indicating the error
+      err = err or "Unknown error"
+      vim.notify("Error reading file: " .. file_path .. " - " .. err, vim.log.levels.WARN)
+
+      local message_content = string.format("#file:%s\n````\nError: %s\n````", file_path, err)
+      table.insert(file_messages, {
+        role = "user",
+        content = message_content,
+      })
+    end
+  end
+
+  return file_messages
+end
+
 ---Convert markdown string to JSON (pure function)
 ---@param md_str string Markdown string of chat completion request
 ---@return string? json JSON string or nil on error
@@ -287,12 +340,24 @@ M.md_to_json_pure = function(md_str)
     return nil, "Content is nil"
   end
 
+  -- Parse file references first
+  local file_messages = parse_file_references(content)
+
   local messages, extract_err = extract_messages_from_markdown(content)
   if not messages then
     return nil, extract_err
   end
 
-  config.messages = messages
+  -- Combine file messages with regular messages
+  local all_messages = {}
+  for _, file_msg in ipairs(file_messages) do
+    table.insert(all_messages, file_msg)
+  end
+  for _, msg in ipairs(messages) do
+    table.insert(all_messages, msg)
+  end
+
+  config.messages = all_messages
 
   local json_str_ok, json_str = pcall(vim.json.encode, config)
   if not json_str_ok then
