@@ -1,6 +1,5 @@
 local parse = require("chatml.parse")
 local ai = require("ai")
-local hub = require("mcphub").get_hub_instance()
 local progress_manager = require("chatml.progress_manager")
 
 ---@class ChatMLLLM
@@ -235,7 +234,22 @@ end
 ---@param buf integer Buffer number
 ---@return string content Markdown content
 local function get_buffer_content(buf)
-  return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+  local md_str = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+
+  -- if last line of md_str is not ---, then append it
+  local last_line = md_str:match("([^\n]*)\n?$") or ""
+  if last_line ~= "---" then
+    vim.api.nvim_buf_set_lines(buf, -1, -1, false, { "", "---" })
+
+    -- save after setting lines
+    vim.api.nvim_buf_call(buf, function()
+      vim.cmd.write()
+    end)
+
+    return get_buffer_content(buf)
+  end
+
+  return md_str
 end
 
 ---Prepare chat completion request from markdown buffer
@@ -244,7 +258,13 @@ end
 ---@return string md_str Final markdown string
 local function prepare_chat_request(in_buf)
   local md_str = get_buffer_content(in_buf)
-  local tools = hub:get_tools()
+  local tools = {}
+
+  local hub = require("mcphub").get_hub_instance()
+  if hub ~= nil then
+    tools = hub:get_tools()
+  end
+
   local request = prepare_request_from_content(md_str, tools)
   return request, md_str
 end
@@ -298,6 +318,12 @@ end
 ---@param out_buf integer Output buffer
 local function async_call_tool_and_append(server_name, func_name, func_args, out_buf)
   local callback = create_tool_result_callback(out_buf, server_name, func_name)
+
+  local hub = require("mcphub").get_hub_instance()
+  if hub == nil then
+    error("No hub instance found. Please ensure mcphub is properly initialized.")
+  end
+
   hub:call_tool(server_name, func_name, func_args, {
     return_text = true,
     callback = callback,
@@ -445,7 +471,16 @@ local function create_streaming_callback(out_buf)
     end
 
     if delta.function_call then
-      progress_manager:update_handle(progress_id, "Receiving function call...", nil)
+      if delta.function_call then
+        content_length = content_length + #(delta.function_call.name or "") + #(delta.function_call.arguments or "")
+      end
+
+      progress_manager:update_handle(
+        progress_id,
+        string.format("Receiving function call... (%d chars, %d chunks)", content_length, chunk_count),
+        nil
+      )
+
       update_function_call_state(state, delta.function_call)
       return
     end
