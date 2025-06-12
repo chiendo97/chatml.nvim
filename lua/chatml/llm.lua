@@ -391,6 +391,54 @@ end
 -- CALLBACK CREATORS
 -- ============================================================================
 
+---Create on_stdout callback for jobstart with enhanced error handling.
+---@param stream boolean Whether the request is streaming or not.
+---@param on_chat_completion fun(ChatCompletionObject)? Callback for full completion response when stream == false or upon error.
+---@param on_chat_completion_chunk fun(ChatCompletionChunkObject)? Callback for chunk completion when stream == true.
+---@return function on_stdout_callback Callback function for job stdout.
+local function create_on_stdout(stream, on_chat_completion, on_chat_completion_chunk)
+  local buffer = ""
+  return function(_, data, _)
+    if stream then
+      for _, raw_str in ipairs(data) do
+        if raw_str and raw_str ~= "" then
+          buffer = buffer .. raw_str
+
+          local str = buffer:match("^data: (.+)")
+          if not str then
+            str = buffer
+          end
+
+          local ok, obj = pcall(vim.json.decode, str, { luanil = { object = true, array = true } })
+          if ok then
+            buffer = "" -- reset buffer
+            if obj then
+              assert(
+                on_chat_completion_chunk,
+                "on_chat_completion_chunk callback must be provided for streaming requests"
+              )
+              on_chat_completion_chunk(obj)
+            end
+          end
+        end
+      end
+    else
+      local raw_str = table.concat(data)
+      if raw_str and raw_str ~= "" then
+        buffer = buffer .. raw_str
+        local ok, obj = pcall(vim.json.decode, buffer, { luanil = { object = true, array = true } })
+        if ok then
+          buffer = "" -- reset buffer
+          if obj then
+            assert(on_chat_completion, "on_chat_completion callback must be provided for non-streaming requests")
+            on_chat_completion(obj)
+          end
+        end
+      end
+    end
+  end
+end
+
 ---Create callback for non-streaming chat completion
 ---@param out_buf integer Output buffer
 ---@return function callback Callback function for chat completion
@@ -402,6 +450,12 @@ local function create_chat_completion_callback(out_buf)
 
   return function(chat_completion_obj)
     progress_manager:update_handle(progress_id, "Processing response...", 50)
+
+    if chat_completion_obj.error then
+      progress_manager:finish_handle(progress_id, "Chat completion failed")
+      vim.notify("Chat completion error: " .. vim.inspect(chat_completion_obj.error), vim.log.levels.ERROR)
+      return
+    end
 
     local message = chat_completion_obj.choices[1].message
     local role = message.role
@@ -458,6 +512,12 @@ local function create_streaming_callback(out_buf)
 
   return function(chat_completion_chunk_obj)
     chunk_count = chunk_count + 1
+
+    if chat_completion_chunk_obj.error then
+      progress_manager:finish_handle(progress_id, "Stream failed")
+      vim.notify("Chat completion stream error: " .. vim.inspect(chat_completion_chunk_obj.error), vim.log.levels.ERROR)
+      return
+    end
 
     local choice = chat_completion_chunk_obj.choices[1]
     local delta = choice.delta
@@ -567,15 +627,12 @@ M.chat_completion = function(in_buf, out_buf)
 
   local completion_callback = not request.stream and create_chat_completion_callback(out_buf) or nil
   local streaming_callback = request.stream and create_streaming_callback(out_buf) or nil
+  local on_stdout_callback = create_on_stdout(request.stream, completion_callback, streaming_callback)
 
   -- Finish main progress since actual completion progress is handled by callbacks
   progress_manager:finish_handle(main_progress_id, "Request sent to LLM")
 
-  M.client:chat_completion_create(request, completion_callback, streaming_callback)
+  M.client:chat_completion_create(request, completion_callback, streaming_callback, on_stdout_callback)
 end
-
--- Expose callback creators for testing
-M.on_chat_completion = create_chat_completion_callback
-M.on_chat_completion_chunk = create_streaming_callback
 
 return M

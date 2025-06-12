@@ -30,6 +30,7 @@ local function create_chat_template()
     .. "- Use Socratic method to improve your thinking and coding skills.\n"
     .. "- Don't elide any code from your output if the answer requires coding.\n"
     .. "- Take a deep breath; You've got this!\n"
+    .. "- Always use `----` instead of `---`!\n"
 
   return table.concat({
     "---",
