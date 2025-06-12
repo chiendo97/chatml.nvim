@@ -21,6 +21,16 @@ end
 
 -- Helper function to create chat template
 local function create_chat_template()
+  local system_prompt = "You are a general AI assistant.\n\n"
+    .. "The user provided the additional info about how they would like you to respond:\n\n"
+    .. "- If you're unsure don't guess and say you don't know instead.\n"
+    .. "- Ask question if you need clarification to provide better answer.\n"
+    .. "- Think deeply and carefully from first principles step by step.\n"
+    .. "- Zoom out first to see the big picture and then zoom in to details.\n"
+    .. "- Use Socratic method to improve your thinking and coding skills.\n"
+    .. "- Don't elide any code from your output if the answer requires coding.\n"
+    .. "- Take a deep breath; You've got this!\n"
+
   return table.concat({
     "---",
     "model: gpt-4.1-mini",
@@ -29,15 +39,7 @@ local function create_chat_template()
     "",
     "# system",
     "",
-    "You are a general AI assistant.\n\n"
-      .. "The user provided the additional info about how they would like you to respond:\n\n"
-      .. "- If you're unsure don't guess and say you don't know instead.\n"
-      .. "- Ask question if you need clarification to provide better answer.\n"
-      .. "- Think deeply and carefully from first principles step by step.\n"
-      .. "- Zoom out first to see the big picture and then zoom in to details.\n"
-      .. "- Use Socratic method to improve your thinking and coding skills.\n"
-      .. "- Don't elide any code from your output if the answer requires coding.\n"
-      .. "- Take a deep breath; You've got this!\n",
+    system_prompt,
     "",
     "---",
     "",
@@ -69,6 +71,47 @@ local function handle_file_selection(chats)
       M.open_chat(chats[idx])
     end
   end)
+end
+
+--- Helper function to validate file path
+--- @param filename string
+--- @return boolean, string|nil
+local function validate_file_path(filename)
+  if not filename or filename == "" then
+    return false, "Invalid filename provided"
+  end
+
+  if vim.fn.filereadable(filename) == 0 then
+    return false, "File does not exist: " .. filename
+  end
+
+  return true, nil
+end
+
+-- Helper function to move cursor to end of buffer
+local function move_cursor_to_end(bufnr)
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  vim.api.nvim_win_set_cursor(0, { line_count, 0 })
+end
+
+-- Helper function to setup buffer keymaps
+local function setup_buffer_keymaps(buf)
+  -- Create buffer-local keymap for chat completion
+  vim.keymap.set("n", "<leader>ll", function()
+    llm.chat_completion(buf)
+  end, {
+    buffer = buf,
+    silent = true,
+    desc = "Trigger chat completion",
+  })
+
+  -- Create global keymap for pasting selection
+  vim.keymap.set("x", "<leader>lp", function()
+    M.paste_selection()
+  end, {
+    silent = true,
+    desc = "Paste selection into chat",
+  })
 end
 
 M.picker = function()
@@ -126,14 +169,9 @@ end
 --- @return nil
 M.open_chat = function(filename)
   -- Validate input
-  if not filename or filename == "" then
-    vim.notify("Invalid filename provided", vim.log.levels.ERROR)
-    return
-  end
-
-  -- Check if the file exists
-  if vim.fn.filereadable(filename) == 0 then
-    vim.notify("File does not exist: " .. filename, vim.log.levels.ERROR)
+  local is_valid, error_msg = validate_file_path(filename)
+  if not is_valid and error_msg then
+    vim.notify(error_msg, vim.log.levels.ERROR)
     return
   end
 
@@ -146,83 +184,69 @@ M.open_chat = function(filename)
   -- Store last buffer for quick access
   last_buf = buf
 
-  -- Create buffer-local keymap for chat completion
-  vim.keymap.set("n", "<leader>ll", function()
-    llm.chat_completion(buf)
-  end, {
-    buffer = buf,
-    silent = true,
-    desc = "Trigger chat completion",
-  })
-
-  -- Create global keymap for pasting selection
-  vim.keymap.set("x", "<leader>lp", function()
-    M.paste_selection()
-  end, {
-    silent = true,
-    desc = "Paste selection into chat",
-  })
+  -- Setup keymaps
+  setup_buffer_keymaps(buf)
 
   -- Move cursor to the end of the buffer
-  vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(last_buf), 0 })
+  move_cursor_to_end(buf)
 end
 
+-- Get visual selection with proper bounds checking
 local function get_visual_selection()
   local mode = vim.api.nvim_get_mode().mode
-
-  local cline, ccol = unpack(vim.api.nvim_win_get_cursor(0))
-  local vline, vcol = vim.fn.line("v"), vim.fn.col("v")
-
-  local sline, scol
-  local eline, ecol
-  if cline == vline then
-    if ccol <= vcol then
-      sline, scol = cline, ccol
-      eline, ecol = vline, vcol
-      scol = scol + 1
-    else
-      sline, scol = vline, vcol
-      eline, ecol = cline, ccol
-      ecol = ecol + 1
-    end
-  elseif cline < vline then
-    sline, scol = cline, ccol
-    eline, ecol = vline, vcol
-    scol = scol + 1
-  else
-    sline, scol = vline, vcol
-    eline, ecol = cline, ccol
-    ecol = ecol + 1
+  if not mode:match("[vV\22]") then
+    return nil, nil, nil
   end
 
+  local current_pos = vim.api.nvim_win_get_cursor(0)
+  local cline, ccol = current_pos[1], current_pos[2]
+  local vline, vcol = vim.fn.line("v"), vim.fn.col("v")
+
+  local sline, scol, eline, ecol
+
+  if cline == vline then
+    if ccol <= vcol then
+      sline, scol = cline, ccol + 1
+      eline, ecol = vline, vcol
+    else
+      sline, scol = vline, vcol
+      eline, ecol = cline, ccol + 1
+    end
+  elseif cline < vline then
+    sline, scol = cline, ccol + 1
+    eline, ecol = vline, vcol
+  else
+    sline, scol = vline, vcol
+    eline, ecol = cline, ccol + 1
+  end
+
+  -- Handle line-wise and block-wise selection
   if mode == "V" or mode == "CTRL-V" or mode == "\22" then
     scol = 1
     ecol = nil
   end
 
-  local lines = vim.api.nvim_buf_get_lines(0, sline - 1, eline, 0)
+  local lines = vim.api.nvim_buf_get_lines(0, sline - 1, eline, false)
   if #lines == 0 then
-    return
+    return nil, nil, nil
   end
 
-  local startText, endText
+  -- Process selection based on number of lines
+  local selection = {}
   if #lines == 1 then
-    startText = string.sub(lines[1], scol, ecol)
+    table.insert(selection, string.sub(lines[1], scol, ecol))
   else
-    startText = string.sub(lines[1], scol)
-    endText = string.sub(lines[#lines], 1, ecol)
+    table.insert(selection, string.sub(lines[1], scol))
+    for i = 2, #lines - 1 do
+      table.insert(selection, lines[i])
+    end
+    if #lines > 1 then
+      table.insert(selection, string.sub(lines[#lines], 1, ecol))
+    end
   end
 
-  local selection = { startText }
-  if #lines > 2 then
-    vim.list_extend(selection, vim.list_slice(lines, 2, #lines - 1))
-  end
-  table.insert(selection, endText)
-
-  -- get current file path
+  -- Get file metadata
   local file_path = vim.fn.expand("%:p")
-
-  -- get current file type
   local file_type = vim.bo.filetype
 
   return selection, file_path, file_type
@@ -230,55 +254,66 @@ end
 
 -- Jump to window displaying the given buffer number
 -- @param bufnr number: buffer number to find
+-- @return boolean: success status
 local function jump_to_window_with_buffer(bufnr)
-  -- Get list of all windows
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+
   local windows = vim.api.nvim_list_wins()
-  -- Iterate through windows to find one showing the target buffer
   for _, win in ipairs(windows) do
     if vim.api.nvim_win_get_buf(win) == bufnr then
-      -- Set focus to this window
       vim.api.nvim_set_current_win(win)
-      return true -- Found and jumped successfully
+      return true
     end
   end
-  return false -- No window found with the given buffer
+  return false
+end
+
+-- Helper function to create paste template
+local function create_paste_template(lines, file_path, file_type)
+  local template = {
+    string.format("I have a following selection from a file: `%s`", file_path),
+    "",
+    "````" .. (file_type or ""),
+  }
+
+  vim.list_extend(template, lines)
+  table.insert(template, "````")
+  table.insert(template, "")
+
+  return template
 end
 
 M.paste_selection = function()
-  -- Check if the last buffer is set
+  -- Validate last buffer
   if not last_buf or not vim.api.nvim_buf_is_valid(last_buf) then
     vim.notify("No valid chat buffer found", vim.log.levels.ERROR)
     return
   end
 
+  -- Get visual selection
   local lines, file_path, file_type = get_visual_selection()
   if not lines or #lines == 0 then
     vim.notify("No text selected", vim.log.levels.INFO)
     return
   end
-  if not file_path or not file_type then
-    vim.notify("Failed to get file path or type", vim.log.levels.ERROR)
+
+  if not file_path then
+    vim.notify("Failed to get file path", vim.log.levels.ERROR)
     return
   end
 
-  -- build selection template with file info
-  local paste_template = {
-    string.format("I have a following selection from a file: `%s`", file_path),
-    "",
-    "````" .. file_type,
-  }
-
-  vim.list_extend(paste_template, lines)
-  vim.list_extend(paste_template, { "````", "" })
-
-  -- Append the selection to the chat file
+  -- Create and append paste template
+  local paste_template = create_paste_template(lines, file_path, file_type)
   vim.api.nvim_buf_set_lines(last_buf, -1, -1, false, paste_template)
 
-  -- Jump to the last buffer's window
-  jump_to_window_with_buffer(last_buf)
-
-  -- Move cursor to the end of the buffer
-  vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(last_buf), 0 })
+  -- Jump to chat buffer and position cursor
+  if jump_to_window_with_buffer(last_buf) then
+    move_cursor_to_end(last_buf)
+  else
+    vim.notify("Could not find window with chat buffer", vim.log.levels.WARN)
+  end
 end
 
 return M
