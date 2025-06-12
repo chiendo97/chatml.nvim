@@ -257,7 +257,7 @@ end
 ---@return string? error Error message if extraction failed
 local function extract_messages_from_markdown(content)
   local messages = {}
-  local pattern = "\n# (%w+)\n\n(.-)\n\n%-%-%-"
+  local pattern = "\n# (%w+)\n\n(.-)\n\n%-%-%-%f[^-]"
 
   for role, msg_content in content:gmatch(pattern) do
     if not VALID_ROLES[role] then
@@ -425,6 +425,22 @@ M.md_buf_to_json_buf = function(in_buf, out_buf)
     log.debug("Generated md_str is nil")
     error("Generated md_str is nil")
   end
+end
+
+---Convert markdown file to JSON string using md_to_json
+---@param file_path string Path to the input markdown file
+---@return string|nil json_str JSON string representation of the markdown content, or nil on error
+M.md_file_to_json_str = function(file_path)
+  local fd = io.open(file_path, "r")
+  if not fd then
+    error("Cannot open file: " .. file_path)
+  end
+  local md_str = fd:read("*a")
+  fd:close()
+  if not md_str then
+    error("Failed to read markdown file content")
+  end
+  return M.md_to_json(md_str)
 end
 
 return M
