@@ -1,1 +1,1 @@
-{"messages":[{"role":"user","content":"#file:spec/data/md_to_json/example.py\n````\nprint(\"hello world\")\n\n````"},{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"Summary the code #file:spec/data/md_to_json/example.py"}],"model":"gpt-4o"}
+{"model":"gpt-4o","messages":[{"content":"You are a helpful assistant.","role":"system"},{"content":"Summary the code #file:spec/data/md_to_json/example.py\n\n````spec/data/md_to_json/example.py\nprint(\"hello world\")\n\n````","role":"user"}]}
