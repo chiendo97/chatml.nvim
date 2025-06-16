@@ -84,21 +84,17 @@ end
 ---@param message table Chat message
 ---@return boolean has_function_call Whether message has function call
 local function has_function_call(message)
-  return message and message.role == "assistant" and message.function_call
+  return message and message.role == "assistant" and (message.function_call or message.tool_calls)
 end
 
 ---Extract function call info from message
----@param message table Chat message with function call
+---@param function_call table Chat message with function call
 ---@return string? server_name Server name
 ---@return string? func_name Function name
 ---@return table func_args Function arguments
-local function extract_function_call_info(message)
-  if not has_function_call(message) then
-    return nil, nil, {}
-  end
-
-  local server_name, func_name = parse_tool_name(message.function_call.name)
-  local func_args = parse_function_arguments(message.function_call.arguments)
+local function extract_function_call_info(function_call)
+  local server_name, func_name = parse_tool_name(function_call.name)
+  local func_args = parse_function_arguments(function_call.arguments)
 
   return server_name, func_name, func_args
 end
@@ -197,13 +193,6 @@ end
 ---@param text string[] Text lines to insert
 local function insert_text_at_position(buf, line, col, text)
   vim.api.nvim_buf_set_text(buf, line, col, line, col, text)
-end
-
----Replace buffer content
----@param buf integer Buffer number
----@param content string Content to set
-local function replace_buffer_content(buf, content)
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(content, "\n"))
 end
 
 ---Validate buffer filetype
@@ -358,21 +347,20 @@ end
 ---Handle function call in last assistant message
 ---@param request table The chat completion request
 ---@param buf integer Buffer number to append tool result
----@return table request The unmodified request
 ---@return boolean tool_called Whether a tool was called
 local function handle_last_function_call(request, buf)
   local last_msg = request.messages[#request.messages]
   if not has_function_call(last_msg) then
-    return request, false
+    return false
   end
 
   local server_name, func_name, func_args = extract_function_call_info(last_msg)
   if not (server_name and func_name) then
-    return request, false
+    return false
   end
 
   async_call_tool_and_append(server_name, func_name, func_args, buf)
-  return request, true
+  return true
 end
 
 -- ============================================================================
@@ -501,6 +489,24 @@ end
 ---@param message table Message with function call
 ---@param out_buf integer Output buffer
 local function process_function_call_message(message, out_buf)
+  for _, tool_call in ipairs(message.tool_calls or {}) do
+    local function_call = tool_call["function"]
+
+    if function_call.name and function_call.arguments then
+      local func_lines = format_function_call_lines(function_call.name, function_call.arguments)
+      append_lines_to_buffer(out_buf, func_lines)
+
+      local server_name, func_name_no_srv, func_args = extract_function_call_info(function_call)
+      if server_name and func_name_no_srv then
+        async_call_tool_and_append(server_name, func_name_no_srv, func_args, out_buf)
+      end
+    end
+  end
+
+  if not message.function_call then
+    return
+  end
+
   local func_name = message.function_call.name or ""
   local args = message.function_call.arguments or ""
   local func_lines = format_function_call_lines(func_name, args)
@@ -569,8 +575,8 @@ local function create_chat_completion_callback(out_buf)
 
     progress_manager:update_handle(progress_id, "Formatting response...", 70)
 
-    if message.function_call then
-      progress_manager:update_handle(progress_id, "Executing function call...", 80)
+    if message.function_call or message.tool_calls then
+      progress_manager:update_handle(progress_id, "Executing function/tools call...", 80)
       process_function_call_message(message, out_buf)
     end
 
@@ -677,6 +683,23 @@ local function create_streaming_callback(out_buf)
       return
     end
 
+    if delta.tool_calls then
+      for _, tool_call in ipairs(delta.tool_calls) do
+        local func_call = tool_call["function"]
+
+        content_length = content_length + #(func_call.name or "") + #(func_call.arguments or "")
+
+        progress_manager:update_handle(
+          progress_id,
+          string.format("Receiving function call... (%d chars, %d chunks)", content_length, chunk_count),
+          nil
+        )
+
+        update_function_call_state(state, func_call)
+      end
+      return
+    end
+
     content_length = process_stream_delta_content(delta, out_buf, content_length)
     if delta.content then
       progress_manager:update_handle(
@@ -687,7 +710,7 @@ local function create_streaming_callback(out_buf)
     end
 
     local finish_reason = choice.finish_reason
-    if finish_reason == "stop" or finish_reason == "function_call" then
+    if finish_reason == "stop" or finish_reason == "function_call" or finish_reason == "tool_calls" then
       progress_manager:update_handle(progress_id, "Finalizing function call...", 90)
       handle_stream_completion(progress_id, state, out_buf, chunk_count, content_length)
     elseif finish_reason then
@@ -733,7 +756,7 @@ M.chat_completion = function(in_buf, out_buf)
   local request = prepare_chat_request(in_buf)
 
   progress_manager:update_handle(main_progress_id, "Checking for tool calls...", 50)
-  local _, is_tool_used = handle_last_function_call(request, out_buf)
+  local is_tool_used = handle_last_function_call(request, out_buf)
 
   if is_tool_used then
     progress_manager:finish_handle(main_progress_id, "Tool call initiated")
@@ -746,6 +769,14 @@ M.chat_completion = function(in_buf, out_buf)
   local completion_callback = not request.stream and create_chat_completion_callback(out_buf) or nil
   local streaming_callback = request.stream and create_streaming_callback(out_buf) or nil
   local on_stdout_callback = create_on_stdout(request.stream, completion_callback, streaming_callback)
+
+  vim.notify(
+    "Message length: "
+      .. #request.messages
+      .. " messages, "
+      .. #request.messages[#request.messages].content
+      .. " characters"
+  )
 
   progress_manager:finish_handle(main_progress_id, "Request sent to LLM")
   M.client:chat_completion_create(request, completion_callback, streaming_callback, on_stdout_callback)
