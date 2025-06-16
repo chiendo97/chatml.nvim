@@ -84,7 +84,7 @@ end
 ---@param message table Chat message
 ---@return boolean has_function_call Whether message has function call
 local function has_function_call(message)
-  return message and message.role == "assistant" and (message.function_call or message.tool_calls)
+  return message and (message.function_call or message.tool_calls)
 end
 
 ---Extract function call info from message
@@ -128,8 +128,16 @@ end
 
 ---Format function name lines for function role
 ---@param func_name string Function name
+---@param tool_call_id string? Tool call identifier
 ---@return string[] lines The formatted function name lines
-local function format_function_name_lines(func_name)
+local function format_function_name_lines(func_name, tool_call_id)
+  if tool_call_id then
+    -- ### tool: reddit-fetch_reddit_hot_threads (id=call_1ccPSUE6rZnJQlGqLQePBMsb)
+    return {
+      "### tool: " .. func_name .. " (id=" .. tool_call_id .. ")",
+      "",
+    }
+  end
   return {
     "### function: " .. func_name,
     "",
@@ -279,16 +287,17 @@ end
 ---@param server_name string Server name
 ---@param func_name string Function name
 ---@param response any Tool response
-local function handle_tool_success(progress_id, out_buf, server_name, func_name, response)
+---@param tool_call_id string? Tool call identifier
+local function handle_tool_success(progress_id, out_buf, server_name, func_name, response, tool_call_id)
   progress_manager:update_handle(progress_id, "Processing tool response...", 80)
 
   local result_content = format_tool_result(response, nil)
-  local func_name_lines = format_function_name_lines(string.format("%s-%s", server_name, func_name))
+  local func_name_lines = format_function_name_lines(string.format("%s-%s", server_name, func_name), tool_call_id)
   local content_lines = split_content_to_lines(result_content)
 
   -- TODO: remove vim.schedule
   vim.schedule(function()
-    append_lines_to_buffer(out_buf, { "", "# assistant", "" })
+    append_lines_to_buffer(out_buf, { "", "# tool", "" })
     append_lines_to_buffer(out_buf, func_name_lines)
     append_lines_to_buffer(out_buf, content_lines)
     append_lines_to_buffer(out_buf, { "", "---" })
@@ -300,8 +309,9 @@ end
 ---@param out_buf integer Output buffer
 ---@param server_name string Server name
 ---@param func_name string Function name
+---@param tool_call_id string? Tool call identifier
 ---@return function callback Tool result callback
-local function create_tool_result_callback(out_buf, server_name, func_name)
+local function create_tool_result_callback(out_buf, server_name, func_name, tool_call_id)
   local progress_id = string.format("tool_%s_%s_%d", server_name, func_name, out_buf)
 
   progress_manager:create_handle(
@@ -315,7 +325,7 @@ local function create_tool_result_callback(out_buf, server_name, func_name)
       handle_tool_error(progress_id, err)
       return
     end
-    handle_tool_success(progress_id, out_buf, server_name, func_name, response)
+    handle_tool_success(progress_id, out_buf, server_name, func_name, response, tool_call_id)
   end
 end
 
@@ -334,8 +344,9 @@ end
 ---@param func_name string Function name
 ---@param func_args table Function arguments
 ---@param out_buf integer Output buffer
-local function async_call_tool_and_append(server_name, func_name, func_args, out_buf)
-  local callback = create_tool_result_callback(out_buf, server_name, func_name)
+---@param tool_call_id string? Tool call identifier
+local function async_call_tool_and_append(server_name, func_name, func_args, out_buf, tool_call_id)
+  local callback = create_tool_result_callback(out_buf, server_name, func_name, tool_call_id)
   local hub = get_hub_instance()
 
   hub:call_tool(server_name, func_name, func_args, {
@@ -356,10 +367,11 @@ local function handle_last_function_call(request, buf)
 
   for _, tool_call in ipairs(last_msg.tool_calls or {}) do
     local function_call = tool_call["function"]
+    local tool_call_id = tool_call.id or ""
     if function_call and function_call.name and function_call.arguments then
       local server_name, func_name, func_args = extract_function_call_info(function_call)
       if server_name and func_name then
-        async_call_tool_and_append(server_name, func_name, func_args, buf)
+        async_call_tool_and_append(server_name, func_name, func_args, buf, tool_call_id)
         return true
       end
     end
@@ -374,7 +386,7 @@ local function handle_last_function_call(request, buf)
     return false
   end
 
-  async_call_tool_and_append(server_name, func_name, func_args, buf)
+  async_call_tool_and_append(server_name, func_name, func_args, buf, nil)
   return true
 end
 
@@ -500,15 +512,28 @@ local function handle_chat_completion_error(progress_id, error)
   vim.notify("Chat completion error: " .. vim.inspect(error), vim.log.levels.ERROR)
 end
 
+local function format_tool_call_lines(func_name, tool_call_id, args)
+  args = args:gsub("\n", "")
+  return {
+    string.format("### tool_call: %s (id=%s)", func_name, tool_call_id),
+    "",
+    "```json",
+    args,
+    "```",
+    "",
+  }
+end
+
 ---Process function call message
 ---@param message table Message with function call
 ---@param out_buf integer Output buffer
 local function process_function_call_message(message, out_buf)
   for _, tool_call in ipairs(message.tool_calls or {}) do
     local function_call = tool_call["function"]
+    local tool_call_id = tool_call.id or ""
 
-    if function_call.name and function_call.arguments then
-      local func_lines = format_function_call_lines(function_call.name, function_call.arguments)
+    if function_call and function_call.name and function_call.arguments then
+      local func_lines = format_tool_call_lines(function_call.name, tool_call_id, function_call.arguments)
       append_lines_to_buffer(out_buf, func_lines)
 
       local server_name, func_name_no_srv, func_args = extract_function_call_info(function_call)

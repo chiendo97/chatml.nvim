@@ -238,11 +238,57 @@ local function read_file_content(filepath)
   return content
 end
 
+---@param content string Message content
+---@return ChatMLToolCall[] tool_calls List of tool calls found in the content
+---@return string new_content Content after removing tool call blocks
+local function parse_tool_call_block(content)
+  -- find all tool_call blocks like:
+  -- ### tool_call: func (id=123) ... ```json ... ```
+  ---@type ChatMLToolCall[]
+  local tool_calls = {}
+  local new_content = content
+  local pattern = "### tool_call:%s*(%S+)%s*%(%s*id%s*=%s*([^%)]+)%)%s*```json\n(.-)```"
+  local found_any = false
+  for func, id, args in content:gmatch(pattern) do
+    found_any = true
+    table.insert(tool_calls, {
+      id = id,
+      type = "function",
+      ["function"] = {
+        name = func,
+        arguments = args,
+      },
+    })
+  end
+
+  if found_any then
+    -- Remove all matched tool_call blocks from content
+    new_content = content:gsub("\n?### tool_call:%s*%S+%s*%(%s*id%s*=%s*[^%)]+%)%s*```json\n.-```%s*", "")
+    new_content = new_content:gsub("^%s+", ""):gsub("%s+$", "")
+  end
+
+  return tool_calls, new_content
+end
+
+---@param content string Message content
+---@return string? tool_call_id Tool call ID if present
+---@return string msg_content Remaining content after tool call ID extraction
+local function parse_tool_message_block(content)
+  -- only for role == 'tool', requires tool_call_id
+  -- ### tool: reddit-fetch_reddit_hot_threads (id=call_1ccPSUE6rZnJQlGqLQePBMsb)
+  -- ````json
+  -- <tool-content>
+  -- ````
+  local tool_call_id, tool_content = content:match("### tool:%s*%S+%s*%(%s*id%s*=%s*([^%)]+)%)%s*````json\n(.-)\n````")
+  return tool_call_id, tool_content or ""
+end
+
 ---Parse a single message from markdown content
 ---@param role string Message role
 ---@param msg_content string Message content
 ---@return ChatMLMessage message Parsed message
 local function parse_message_from_markdown(role, msg_content)
+  ---@type ChatMLMessage
   local msg = { role = role }
   local content_trim = msg_content:gsub("^%s+", ""):gsub("%s+$", "")
 
@@ -258,6 +304,21 @@ local function parse_message_from_markdown(role, msg_content)
     if file_content then
       content_trim = string.format("%s\n\n````%s\n%s\n````", content_trim, file_path, file_content)
     end
+  end
+
+  -- Tool message special parse:
+  if role == "tool" then
+    local tool_call_id, tool_content = parse_tool_message_block(content_trim)
+    msg.tool_call_id = tool_call_id
+    msg.content = tool_content
+    return msg
+  end
+
+  -- tool_calls parsing (multiple):
+  local tool_calls, after = parse_tool_call_block(content_trim)
+  if #tool_calls > 0 then
+    msg.tool_calls = tool_calls
+    content_trim = after
   end
 
   local func_call_name, func_call_args, cleaned_content = parse_function_call_block(content_trim)

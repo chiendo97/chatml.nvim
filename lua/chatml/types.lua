@@ -33,7 +33,14 @@
 ---@field role string
 ---@field content? string
 ---@field function_call? ChatMLFunctionCall
+---@field tool_calls? ChatMLToolCall[]
 ---@field name? string
+---@field tool_call_id? string
+
+---@class ChatMLToolCall
+---@field id string
+---@field type string
+---@field function ChatMLFunctionCall
 
 ---@class ChatMLFunctionCall
 ---@field name string
