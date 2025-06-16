@@ -56,11 +56,14 @@ end
 ---@return table func_def Function definition for LLM
 local function tool_to_function_def(tool)
   local func_def = {
-    name = string.format("%s-%s", tool.server_name, tool.name),
-    description = tool.description,
-    parameters = tool.inputSchema,
+    ["function"] = clean_function_examples({
+      name = string.format("%s-%s", tool.server_name, tool.name),
+      description = tool.description,
+      parameters = tool.inputSchema,
+    }),
+    type = "function",
   }
-  return clean_function_examples(func_def)
+  return func_def
 end
 
 ---Add tools to chat completion request
@@ -68,11 +71,13 @@ end
 ---@param tools table[] Array of tools from hub
 ---@return table request The modified request
 local function add_tools_to_request(request, tools)
-  request["functions"] = request["functions"] or {}
+  request["tools"] = request["tools"] or {}
 
   for _, tool in ipairs(tools) do
-    table.insert(request["functions"], tool_to_function_def(tool))
+    table.insert(request["tools"], tool_to_function_def(tool))
   end
+
+  print(vim.inspect(request["tools"]))
 
   return request
 end
@@ -546,6 +551,12 @@ local function create_chat_completion_callback(out_buf)
 
     if chat_completion_obj.error then
       handle_chat_completion_error(progress_id, chat_completion_obj.error)
+      return
+    end
+
+    if not chat_completion_obj.choices or #chat_completion_obj.choices == 0 then
+      progress_manager:finish_handle(progress_id, "Chat completion response has no choices")
+      vim.notify("Chat completion response has no choices: " .. vim.inspect(chat_completion_obj), vim.log.levels.ERROR)
       return
     end
 
