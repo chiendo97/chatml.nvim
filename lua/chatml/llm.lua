@@ -77,8 +77,6 @@ local function add_tools_to_request(request, tools)
     table.insert(request["tools"], tool_to_function_def(tool))
   end
 
-  print(vim.inspect(request["tools"]))
-
   return request
 end
 
