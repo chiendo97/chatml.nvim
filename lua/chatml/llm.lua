@@ -354,7 +354,22 @@ local function handle_last_function_call(request, buf)
     return false
   end
 
-  local server_name, func_name, func_args = extract_function_call_info(last_msg)
+  for _, tool_call in ipairs(last_msg.tool_calls or {}) do
+    local function_call = tool_call["function"]
+    if function_call and function_call.name and function_call.arguments then
+      local server_name, func_name, func_args = extract_function_call_info(function_call)
+      if server_name and func_name then
+        async_call_tool_and_append(server_name, func_name, func_args, buf)
+        return true
+      end
+    end
+  end
+
+  if not last_msg.function_call then
+    return false
+  end
+
+  local server_name, func_name, func_args = extract_function_call_info(last_msg.function_call)
   if not (server_name and func_name) then
     return false
   end
