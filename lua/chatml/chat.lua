@@ -1,10 +1,14 @@
+---@class ChatMLChat
 local M = {}
 local data_path = vim.fn.stdpath("data"):gsub("/$", "")
 local chat_dir = data_path .. "/chatml/chats"
-local llm = require("chatml.llm")
+local llm = require("chatml.llm") ---@type ChatMLLLM
+
+---@type integer?
 local last_buf = nil
 
 -- Helper function to ensure chat directory exists
+---@return nil
 local function ensure_chat_dir()
   if vim.fn.isdirectory(chat_dir) == 0 then
     local success = vim.fn.mkdir(chat_dir, "p")
@@ -15,22 +19,25 @@ local function ensure_chat_dir()
 end
 
 -- Helper function to generate chat filename
+---@return string
 local function generate_chat_filename()
   return chat_dir .. "/" .. os.date("%Y-%m-%d_%H-%M-%S") .. ".md"
 end
 
 -- Helper function to create chat template
+---@return string
 local function create_chat_template()
-  local system_prompt = "You are a general AI assistant.\n\n"
-    .. "The user provided the additional info about how they would like you to respond:\n\n"
-    .. "- If you're unsure don't guess and say you don't know instead.\n"
-    .. "- Ask question if you need clarification to provide better answer.\n"
-    .. "- Think deeply and carefully from first principles step by step.\n"
-    .. "- Zoom out first to see the big picture and then zoom in to details.\n"
-    .. "- Use Socratic method to improve your thinking and coding skills.\n"
-    .. "- Don't elide any code from your output if the answer requires coding.\n"
-    .. "- Take a deep breath; You've got this!\n"
-    .. "- Always use `----` instead of `---`!\n"
+  local system_prompt = "You are a developer-focused AI assistant within Neovim.\n\n"
+    .. "Guidelines for our interaction:\n\n"
+    .. "- Prioritize code completeness - never truncate code in your responses\n"
+    .. "- Admit uncertainty rather than guessing when you don't know something\n"
+    .. "- Ask for clarification if requirements are ambiguous\n"
+    .. "- Analyze problems methodically, explain your reasoning when helpful\n"
+    .. "- Provide context-aware suggestions, considering common development patterns\n"
+    .. "- Keep responses focused and relevant to development tasks\n"
+    .. "- Optimize for readability and maintainability in code suggestions\n"
+    .. "- Consider performance implications when applicable\n"
+    .. "- Always use `----` instead of `---` for separators\n"
 
   return table.concat({
     "---",
@@ -46,10 +53,13 @@ local function create_chat_template()
     "",
     "# user",
     "",
+    "",
   }, "\n")
 end
 
 -- Helper function to handle file selection for vim.ui.select
+---@param chats string[]
+---@return nil
 local function handle_file_selection(chats)
   if not chats or #chats == 0 then
     vim.notify("No chat files found", vim.log.levels.INFO)
@@ -76,7 +86,8 @@ end
 
 --- Helper function to validate file path
 --- @param filename string
---- @return boolean, string|nil
+--- @return boolean is_valid
+--- @return string? error_message
 local function validate_file_path(filename)
   if not filename or filename == "" then
     return false, "Invalid filename provided"
@@ -90,12 +101,16 @@ local function validate_file_path(filename)
 end
 
 -- Helper function to move cursor to end of buffer
+---@param bufnr integer
+---@return nil
 local function move_cursor_to_end(bufnr)
   local line_count = vim.api.nvim_buf_line_count(bufnr)
   vim.api.nvim_win_set_cursor(0, { line_count, 0 })
 end
 
 -- Helper function to setup buffer keymaps
+---@param buf integer
+---@return nil
 local function setup_buffer_keymaps(buf)
   -- Create buffer-local keymap for chat completion
   vim.keymap.set("n", "<leader>ll", function()
@@ -115,6 +130,7 @@ local function setup_buffer_keymaps(buf)
   })
 end
 
+---@return nil
 M.picker = function()
   local is_snacks, snacks = pcall(require, "snacks")
   if is_snacks then
@@ -222,6 +238,9 @@ M.open_chat = function(filename)
 end
 
 -- Get visual selection with proper bounds checking
+---@return string[]? selection_lines
+---@return string? file_path
+---@return string? file_type
 local function get_visual_selection()
   local mode = vim.api.nvim_get_mode().mode
   if not mode:match("[vV\22]") then
@@ -301,6 +320,10 @@ local function jump_to_window_with_buffer(bufnr)
 end
 
 -- Helper function to create paste template
+---@param lines string[]
+---@param file_path string
+---@param file_type string?
+---@return string[]
 local function create_paste_template(lines, file_path, file_type)
   local template = {
     string.format("I have a following selection from a file: `%s`", file_path),
@@ -315,6 +338,7 @@ local function create_paste_template(lines, file_path, file_type)
   return template
 end
 
+---@return nil
 M.paste_selection = function()
   -- Validate last buffer
   if not last_buf or not vim.api.nvim_buf_is_valid(last_buf) then

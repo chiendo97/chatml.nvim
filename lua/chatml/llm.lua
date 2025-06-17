@@ -5,6 +5,7 @@ local progress_manager = require("chatml.progress_manager")
 ---@class ChatMLLLM
 local M = {}
 
+---@class AiClient
 M.client = ai.Client:new()
 
 -- ============================================================================
@@ -52,7 +53,7 @@ local function clean_function_examples(func_def)
 end
 
 ---Transform tool to function definition
----@param tool table Tool definition from hub
+---@param tool ChatMLTool Tool definition from hub
 ---@return table func_def Function definition for LLM
 local function tool_to_function_def(tool)
   local func_def = {
@@ -67,9 +68,9 @@ local function tool_to_function_def(tool)
 end
 
 ---Add tools to chat completion request
----@param request table The chat completion request
----@param tools table[] Array of tools from hub
----@return table request The modified request
+---@param request ChatMLRequest The chat completion request
+---@param tools ChatMLTool[] Array of tools from hub
+---@return ChatMLRequest request The modified request
 local function add_tools_to_request(request, tools)
   request["tools"] = request["tools"] or {}
 
@@ -81,14 +82,14 @@ local function add_tools_to_request(request, tools)
 end
 
 ---Check if message has function call
----@param message table Chat message
+---@param message ChatMLMessage Chat message
 ---@return boolean has_function_call Whether message has function call
 local function has_function_call(message)
-  return message and (message.function_call or message.tool_calls)
+  return message ~= nil and (message.function_call ~= nil or (message.tool_calls ~= nil and #message.tool_calls > 0))
 end
 
 ---Extract function call info from message
----@param function_call table Chat message with function call
+---@param function_call ChatMLFunctionCall Chat message with function call
 ---@return string? server_name Server name
 ---@return string? func_name Function name
 ---@return table func_args Function arguments
@@ -145,7 +146,7 @@ local function format_function_name_lines(func_name, tool_call_id)
 end
 
 ---Format tool call result as content
----@param response any Tool call response
+---@param response ChatMLToolResponse Tool call response
 ---@param err? string Error message if tool call failed
 ---@return string content Formatted content string
 local function format_tool_result(response, err)
@@ -171,8 +172,8 @@ end
 
 ---Get the last line, column and line count in the chat buffer
 ---@param buf integer The buffer number
----@return integer last_line Number of the last line
----@return integer last_column Number of columns in the last line
+---@return integer last_line Number of the last line (0-indexed)
+---@return integer last_column Number of columns in the last line (0-indexed)
 local function get_buffer_last_position(buf)
   local line_count = vim.api.nvim_buf_line_count(buf)
   local last_line = line_count - 1
@@ -190,15 +191,17 @@ end
 ---Append lines to buffer
 ---@param buf integer Buffer number
 ---@param lines string[] Lines to append
+---@return nil
 local function append_lines_to_buffer(buf, lines)
   vim.api.nvim_buf_set_lines(buf, -1, -1, true, lines)
 end
 
 ---Insert text at buffer position
 ---@param buf integer Buffer number
----@param line integer Line number
----@param col integer Column number
+---@param line integer Line number (0-indexed)
+---@param col integer Column number (0-indexed)
 ---@param text string[] Text lines to insert
+---@return nil
 local function insert_text_at_position(buf, line, col, text)
   vim.api.nvim_buf_set_text(buf, line, col, line, col, text)
 end
@@ -218,8 +221,8 @@ end
 
 ---Prepare chat completion request from markdown buffer content
 ---@param md_content string Markdown content
----@param tools table[] Available tools
----@return table request Prepared request
+---@param tools ChatMLTool[] Available tools
+---@return ChatMLRequest request Prepared request
 local function prepare_request_from_content(md_content, tools)
   -- Remove trailing whitespace characters from the markdown content
   local cleaned_content = md_content:gsub("%s+$", "")
@@ -237,23 +240,32 @@ end
 ---@param buf integer Buffer number
 ---@return string content Final buffer content
 local function ensure_buffer_separator(buf)
-  local md_str = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
-  local last_line = md_str:match("([^\n]*)\n?$") or ""
+  local current_lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local md_str = table.concat(current_lines, "\n")
 
-  if last_line == "---" then
+  local last_line_content = ""
+  if #current_lines > 0 then
+    last_line_content = current_lines[#current_lines]
+  end
+
+  if last_line_content == "---" then
+    -- Optional: could also check if current_lines[#current_lines-1] == "" for stricter ChatML format
     return md_str
   end
 
-  vim.api.nvim_buf_set_lines(buf, -1, -1, false, { "", "---" })
+  -- Append "" and "---". The `true` for strict_indexing in nvim_buf_set_lines
+  -- with start=-1, end=-1 means append.
+  vim.api.nvim_buf_set_lines(buf, -1, -1, true, { "", "---" })
   vim.api.nvim_buf_call(buf, function()
     vim.cmd.write()
   end)
 
-  return ensure_buffer_separator(buf)
+  -- Return the new content of the buffer
+  return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
 end
 
 ---Get tools from hub
----@return table[] tools Available tools
+---@return ChatMLTool[] tools Available tools
 local function get_available_tools()
   local hub = require("mcphub").get_hub_instance()
   return hub and hub:get_tools() or {}
@@ -261,7 +273,7 @@ end
 
 ---Prepare chat completion request from markdown buffer
 ---@param in_buf integer Input markdown buffer
----@return table request Prepared request
+---@return ChatMLRequest request Prepared request
 local function prepare_chat_request(in_buf)
   local md_str = ensure_buffer_separator(in_buf)
   local tools = get_available_tools()
@@ -276,6 +288,7 @@ end
 ---Handle tool execution error
 ---@param progress_id string Progress identifier
 ---@param err string Error message
+---@return nil
 local function handle_tool_error(progress_id, err)
   progress_manager:finish_handle(progress_id, "Tool call failed")
   vim.notify("Tool call error: " .. err, vim.log.levels.ERROR)
@@ -286,8 +299,9 @@ end
 ---@param out_buf integer Output buffer
 ---@param server_name string Server name
 ---@param func_name string Function name
----@param response any Tool response
+---@param response ChatMLToolResponse Tool response
 ---@param tool_call_id string? Tool call identifier
+---@return nil
 local function handle_tool_success(progress_id, out_buf, server_name, func_name, response, tool_call_id)
   progress_manager:update_handle(progress_id, "Processing tool response...", 80)
 
@@ -310,7 +324,7 @@ end
 ---@param server_name string Server name
 ---@param func_name string Function name
 ---@param tool_call_id string? Tool call identifier
----@return function callback Tool result callback
+---@return fun(response: ChatMLToolResponse?, err: string?): nil callback Tool result callback
 local function create_tool_result_callback(out_buf, server_name, func_name, tool_call_id)
   local progress_id = string.format("tool_%s_%s_%d", server_name, func_name, out_buf)
 
@@ -330,7 +344,7 @@ local function create_tool_result_callback(out_buf, server_name, func_name, tool
 end
 
 ---Get hub instance with error handling
----@return table hub Hub instance
+---@return table hub Hub instance (specific type depends on mcphub)
 local function get_hub_instance()
   local hub = require("mcphub").get_hub_instance()
   if not hub then
@@ -345,6 +359,7 @@ end
 ---@param func_args table Function arguments
 ---@param out_buf integer Output buffer
 ---@param tool_call_id string? Tool call identifier
+---@return nil
 local function async_call_tool_and_append(server_name, func_name, func_args, out_buf, tool_call_id)
   local callback = create_tool_result_callback(out_buf, server_name, func_name, tool_call_id)
   local hub = get_hub_instance()
@@ -356,7 +371,7 @@ local function async_call_tool_and_append(server_name, func_name, func_args, out
 end
 
 ---Handle function call in last assistant message
----@param request table The chat completion request
+---@param request ChatMLRequest The chat completion request
 ---@param buf integer Buffer number to append tool result
 ---@return boolean tool_called Whether a tool was called
 local function handle_last_function_call(request, buf)
@@ -406,7 +421,7 @@ end
 
 ---Update streaming state with function call delta
 ---@param state StreamingState Current state
----@param func_call table Function call delta
+---@param func_call ChatMLFunctionCall Function call delta
 ---@return StreamingState state Updated state
 local function update_function_call_state(state, func_call)
   if func_call.name then
@@ -443,7 +458,7 @@ end
 ---Process streaming data chunk
 ---@param raw_str string Raw data string
 ---@param buffer string Current buffer
----@param callback function Callback to invoke with parsed object
+---@param callback fun(obj: table):nil Callback to invoke with parsed object
 ---@return string new_buffer Updated buffer
 local function process_streaming_chunk(raw_str, buffer, callback)
   if not raw_str or raw_str == "" then
@@ -465,7 +480,7 @@ end
 ---Process non-streaming data
 ---@param data string[] Raw data array
 ---@param buffer string Current buffer
----@param callback function Callback to invoke with parsed object
+---@param callback fun(obj: table):nil Callback to invoke with parsed object
 ---@return string new_buffer Updated buffer
 local function process_non_streaming_data(data, buffer, callback)
   local raw_str = table.concat(data)
@@ -485,9 +500,9 @@ end
 
 ---Create on_stdout callback for jobstart with enhanced error handling.
 ---@param stream boolean Whether the request is streaming or not.
----@param on_chat_completion fun(ChatCompletionObject)? Callback for full completion response when stream == false or upon error.
----@param on_chat_completion_chunk fun(ChatCompletionChunkObject)? Callback for chunk completion when stream == true.
----@return function on_stdout_callback Callback function for job stdout.
+---@param on_chat_completion (fun(obj: ChatCompletionResponse):nil)? Callback for full completion response when stream == false or upon error.
+---@param on_chat_completion_chunk (fun(obj: ChatCompletionResponse):nil)? Callback for chunk completion when stream == true.
+---@return fun(_, data: string[], event: string?):nil on_stdout_callback Callback function for job stdout.
 local function create_on_stdout(stream, on_chat_completion, on_chat_completion_chunk)
   local buffer = ""
 
@@ -507,11 +522,16 @@ end
 ---Handle chat completion error
 ---@param progress_id string Progress identifier
 ---@param error table Error object
+---@return nil
 local function handle_chat_completion_error(progress_id, error)
   progress_manager:finish_handle(progress_id, "Chat completion failed")
   vim.notify("Chat completion error: " .. vim.inspect(error), vim.log.levels.ERROR)
 end
 
+---@param func_name string
+---@param tool_call_id string
+---@param args string
+---@return string[]
 local function format_tool_call_lines(func_name, tool_call_id, args)
   args = args:gsub("\n", "")
   return {
@@ -525,8 +545,9 @@ local function format_tool_call_lines(func_name, tool_call_id, args)
 end
 
 ---Process function call message
----@param message table Message with function call
+---@param message ChatCompletionMessage Message with function call
 ---@param out_buf integer Output buffer
+---@return nil
 local function process_function_call_message(message, out_buf)
   for _, tool_call in ipairs(message.tool_calls or {}) do
     local function_call = tool_call["function"]
@@ -538,7 +559,7 @@ local function process_function_call_message(message, out_buf)
 
       local server_name, func_name_no_srv, func_args = extract_function_call_info(function_call)
       if server_name and func_name_no_srv then
-        async_call_tool_and_append(server_name, func_name_no_srv, func_args, out_buf)
+        async_call_tool_and_append(server_name, func_name_no_srv, func_args, out_buf, tool_call_id) -- Added tool_call_id
       end
     end
   end
@@ -552,15 +573,16 @@ local function process_function_call_message(message, out_buf)
   local func_lines = format_function_call_lines(func_name, args)
   append_lines_to_buffer(out_buf, func_lines)
 
-  local server_name, func_name_no_srv, func_args = extract_function_call_info(message)
+  local server_name, func_name_no_srv, func_args = extract_function_call_info(message.function_call) -- Corrected: pass message.function_call
   if server_name and func_name_no_srv then
-    async_call_tool_and_append(server_name, func_name_no_srv, func_args, out_buf)
+    async_call_tool_and_append(server_name, func_name_no_srv, func_args, out_buf, nil) -- No tool_call_id for legacy function_call
   end
 end
 
 ---Process function role message
----@param message table Message with function role
+---@param message ChatCompletionMessage Message with function role
 ---@param out_buf integer Output buffer
+---@return nil
 local function process_function_role_message(message, out_buf)
   if message.name then
     local func_name_lines = format_function_name_lines(message.name)
@@ -569,8 +591,9 @@ local function process_function_role_message(message, out_buf)
 end
 
 ---Process message content
----@param message table Message with content
+---@param message ChatCompletionMessage Message with content
 ---@param out_buf integer Output buffer
+---@return nil
 local function process_message_content(message, out_buf)
   if not (message.content and message.content ~= "") then
     return
@@ -583,7 +606,7 @@ end
 
 ---Create callback for non-streaming chat completion
 ---@param out_buf integer Output buffer
----@return function callback Callback function for chat completion
+---@return fun(chat_completion_obj: ChatCompletionResponse):nil callback Callback function for chat completion
 local function create_chat_completion_callback(out_buf)
   local last_role = ""
   local progress_id = string.format("chat_completion_%d", out_buf)
@@ -605,6 +628,8 @@ local function create_chat_completion_callback(out_buf)
     end
 
     local message = chat_completion_obj.choices[1].message
+    assert(message, "Chat completion response has no message")
+
     local role = message.role
 
     if role and role ~= "" and last_role ~= role then
@@ -636,6 +661,7 @@ end
 ---@param out_buf integer Output buffer
 ---@param chunk_count integer Number of chunks processed
 ---@param content_length integer Total content length
+---@return nil
 local function handle_stream_completion(progress_id, state, out_buf, chunk_count, content_length)
   if state.func_call_name and state.func_call_args ~= "" then
     local func_lines = format_function_call_lines(state.func_call_name, state.func_call_args)
@@ -654,13 +680,14 @@ end
 ---Handle stream error
 ---@param progress_id string Progress identifier
 ---@param finish_reason string Finish reason
+---@return nil
 local function handle_stream_error(progress_id, finish_reason)
   progress_manager:finish_handle(progress_id, "Stream failed: " .. finish_reason)
   vim.notify("An error occured during text generation. Reason: " .. finish_reason, vim.log.levels.ERROR)
 end
 
 ---Process stream delta content
----@param delta table Delta object
+---@param delta ChatCompletionMessage Delta object (structure similar to ChatMLMessage but with partial fields)
 ---@param out_buf integer Output buffer
 ---@param content_length integer Current content length
 ---@return integer new_content_length Updated content length
@@ -679,7 +706,7 @@ end
 
 ---Create callback for streaming chat completion
 ---@param out_buf integer Output buffer
----@return function callback Callback function for chat completion chunks
+---@return fun(chat_completion_chunk_obj: ChatCompletionResponse):nil callback Callback function for chat completion chunks
 local function create_streaming_callback(out_buf)
   local state = create_streaming_state()
   local progress_id = string.format("chat_stream_%d", out_buf)
@@ -700,6 +727,7 @@ local function create_streaming_callback(out_buf)
 
     local choice = chat_completion_chunk_obj.choices[1]
     local delta = choice.delta
+    assert(delta, "Chat completion chunk has no delta")
 
     local role = delta.role
     if role and role ~= "" and state.last_role ~= role then
@@ -762,7 +790,7 @@ end
 ---Validate input and output buffers
 ---@param in_buf integer Input buffer
 ---@param out_buf integer? Output buffer
----@return integer out_buf Validated output buffer
+---@return integer out_buf_validated Validated output buffer
 local function validate_buffers(in_buf, out_buf)
   if not validate_buffer_filetype(in_buf, "markdown") then
     vim.notify("Input buffer is not a markdown buffer")
@@ -785,6 +813,7 @@ end
 ---Send chat completion request to LLM and add response to output buffer
 ---@param in_buf integer Input markdown buffer number
 ---@param out_buf integer? Output markdown buffer number
+---@return nil
 M.chat_completion = function(in_buf, out_buf)
   local main_progress_id = string.format("main_completion_%d", in_buf)
   progress_manager:create_handle(main_progress_id, "Chat Request", "Preparing request...")
