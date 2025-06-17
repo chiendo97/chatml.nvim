@@ -422,13 +422,17 @@ end
 ---Update streaming state with function call delta
 ---@param state StreamingState Current state
 ---@param func_call ChatMLFunctionCall Function call delta
+---@param tool_call_id string? Tool call identifier (optional)
 ---@return StreamingState state Updated state
-local function update_function_call_state(state, func_call)
+local function update_function_call_state(state, func_call, tool_call_id)
   if func_call.name then
     state.func_call_name = (state.func_call_name or "") .. func_call.name
   end
   if func_call.arguments then
     state.func_call_args = state.func_call_args .. func_call.arguments
+  end
+  if tool_call_id then
+    state.tool_call_id = tool_call_id
   end
   return state
 end
@@ -663,12 +667,16 @@ end
 ---@param content_length integer Total content length
 ---@return nil
 local function handle_stream_completion(progress_id, state, out_buf, chunk_count, content_length)
-  if state.func_call_name and state.func_call_args ~= "" then
+  if state.tool_call_id then
+    local func_lines = format_tool_call_lines(state.func_call_name, state.tool_call_id, state.func_call_args)
+    append_lines_to_buffer(out_buf, func_lines)
+  elseif state.func_call_name and state.func_call_args ~= "" then
     local func_lines = format_function_call_lines(state.func_call_name, state.func_call_args)
     append_lines_to_buffer(out_buf, func_lines)
   end
 
   append_lines_to_buffer(out_buf, { "", "---" })
+
   progress_manager:finish_handle(
     progress_id,
     string.format("Stream completed (%d chunks, %d chars)", chunk_count, content_length)
@@ -725,6 +733,15 @@ local function create_streaming_callback(out_buf)
       return
     end
 
+    if not chat_completion_chunk_obj.choices or #chat_completion_chunk_obj.choices == 0 then
+      progress_manager:finish_handle(progress_id, "Chat completion chunk has no choices")
+      vim.notify(
+        "Chat completion chunk has no choices: " .. vim.inspect(chat_completion_chunk_obj),
+        vim.log.levels.ERROR
+      )
+      return
+    end
+
     local choice = chat_completion_chunk_obj.choices[1]
     local delta = choice.delta
     assert(delta, "Chat completion chunk has no delta")
@@ -739,8 +756,8 @@ local function create_streaming_callback(out_buf)
 
     if delta.function_call then
       local func_call_size = #(delta.function_call.name or "") + #(delta.function_call.arguments or "")
-      content_length = content_length + func_call_size
 
+      content_length = content_length + func_call_size
       progress_manager:update_handle(
         progress_id,
         string.format("Receiving function call... (%d chars, %d chunks)", content_length, chunk_count),
@@ -754,16 +771,16 @@ local function create_streaming_callback(out_buf)
     if delta.tool_calls then
       for _, tool_call in ipairs(delta.tool_calls) do
         local func_call = tool_call["function"]
+        local tool_call_id = tool_call.id
 
         content_length = content_length + #(func_call.name or "") + #(func_call.arguments or "")
-
         progress_manager:update_handle(
           progress_id,
           string.format("Receiving function call... (%d chars, %d chunks)", content_length, chunk_count),
           nil
         )
 
-        update_function_call_state(state, func_call)
+        update_function_call_state(state, func_call, tool_call_id)
       end
       return
     end

@@ -91,6 +91,7 @@
 ---@field last_role string
 ---@field func_call_name? string
 ---@field func_call_args string
+---@field tool_call_id? string
 
 ---@class ChatMLLLM
 ---@field client AiClient llm client used to set request to provider
