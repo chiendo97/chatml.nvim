@@ -53,7 +53,7 @@ local function clean_function_examples(func_def)
 end
 
 ---Transform tool to function definition
----@param tool ChatMLTool Tool definition from hub
+---@param tool EnhancedMCPTool Tool definition from hub
 ---@return table func_def Function definition for LLM
 local function tool_to_function_def(tool)
   local func_def = {
@@ -69,7 +69,7 @@ end
 
 ---Add tools to chat completion request
 ---@param request ChatMLRequest The chat completion request
----@param tools ChatMLTool[] Array of tools from hub
+---@param tools EnhancedMCPTool[] Array of tools from hub
 ---@return ChatMLRequest request The modified request
 local function add_tools_to_request(request, tools)
   request["tools"] = request["tools"] or {}
@@ -146,7 +146,7 @@ local function format_function_name_lines(func_name, tool_call_id)
 end
 
 ---Format tool call result as content
----@param response ChatMLToolResponse Tool call response
+---@param response MCPResponseOutput Tool call response
 ---@param err? string Error message if tool call failed
 ---@return string content Formatted content string
 local function format_tool_result(response, err)
@@ -154,16 +154,11 @@ local function format_tool_result(response, err)
     return vim.json.encode({ error = "Tool call error: " .. err })
   end
 
-  if not (response and response.result and response.result.content) then
+  if not (response and response.text) then
     return "{}"
   end
 
-  local first_content = response.result.content[1]
-  if first_content and first_content.text then
-    return string.format("````json\n%s\n````", first_content.text)
-  end
-
-  return string.format("````json\n%s\n````", response.result.content)
+  return string.format("````json\n%s\n````", response.text)
 end
 
 -- ============================================================================
@@ -221,7 +216,7 @@ end
 
 ---Prepare chat completion request from markdown buffer content
 ---@param md_content string Markdown content
----@param tools ChatMLTool[] Available tools
+---@param tools EnhancedMCPTool[] Available tools
 ---@return ChatMLRequest request Prepared request
 local function prepare_request_from_content(md_content, tools)
   -- Remove trailing whitespace characters from the markdown content
@@ -265,10 +260,15 @@ local function ensure_buffer_separator(buf)
 end
 
 ---Get tools from hub
----@return ChatMLTool[] tools Available tools
+---@return EnhancedMCPTool[] tools Available tools
 local function get_available_tools()
   local hub = require("mcphub").get_hub_instance()
-  return hub and hub:get_tools() or {}
+  if not hub then
+    vim.notify("LLM hub is nil", vim.log.levels.ERROR)
+    return {}
+  end
+
+  return hub:get_tools()
 end
 
 ---Prepare chat completion request from markdown buffer
@@ -299,7 +299,7 @@ end
 ---@param out_buf integer Output buffer
 ---@param server_name string Server name
 ---@param func_name string Function name
----@param response ChatMLToolResponse Tool response
+---@param response MCPResponseOutput Tool response
 ---@param tool_call_id string? Tool call identifier
 ---@return nil
 local function handle_tool_success(progress_id, out_buf, server_name, func_name, response, tool_call_id)
@@ -324,7 +324,7 @@ end
 ---@param server_name string Server name
 ---@param func_name string Function name
 ---@param tool_call_id string? Tool call identifier
----@return fun(response: ChatMLToolResponse?, err: string?): nil callback Tool result callback
+---@return fun(res: MCPResponseOutput? ,err: string?): nil callback Tool result callback
 local function create_tool_result_callback(out_buf, server_name, func_name, tool_call_id)
   local progress_id = string.format("tool_%s_%s_%d", server_name, func_name, out_buf)
 
@@ -344,7 +344,7 @@ local function create_tool_result_callback(out_buf, server_name, func_name, tool
 end
 
 ---Get hub instance with error handling
----@return table hub Hub instance (specific type depends on mcphub)
+---@return MCPHub.Hub hub Hub instance (specific type depends on mcphub)
 local function get_hub_instance()
   local hub = require("mcphub").get_hub_instance()
   if not hub then
@@ -365,7 +365,7 @@ local function async_call_tool_and_append(server_name, func_name, func_args, out
   local hub = get_hub_instance()
 
   hub:call_tool(server_name, func_name, func_args, {
-    return_text = true,
+    parse_response = true,
     callback = callback,
   })
 end

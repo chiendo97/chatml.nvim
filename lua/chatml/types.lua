@@ -99,27 +99,8 @@
 ---@field on_chat_completion fun(out_buf: integer): fun(chat_completion_obj: ChatCompletionResponse):nil -- Kept for potential direct use, though create_chat_completion_callback is internal
 ---@field on_chat_completion_chunk fun(out_buf: integer): fun(chat_completion_chunk_obj: ChatCompletionResponse):nil -- Kept for potential direct use, though create_streaming_callback is internal
 
--- Tool-related types (as used by mcphub and LLM)
-
----@class ChatMLTool
----@field server_name string
----@field name string
----@field description string
----@field inputSchema table -- JSON schema for tool inputs
-
----@class ChatMLToolResponseResult
----@field content any -- Can be string, or table like {text: "..."} or array of such
--- Example from code: response.result.content[1].text or response.result.content (as string)
-
----@class ChatMLToolResponse
----@field result? { content: any } -- Simplified based on current usage in format_tool_result
----@field error? string
-
----@class ChatMLToolContent
----@field text? string
----@field [string] any
-
 -- lua/chatml/chat.lua -----------------------------------------------------------
+
 ---@class ChatMLChat
 ---@field picker fun(): nil
 ---@field new_chat fun(): nil
