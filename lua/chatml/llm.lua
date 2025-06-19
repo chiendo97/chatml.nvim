@@ -2,6 +2,9 @@ local parse = require("chatml.parse")
 local ai = require("ai")
 local progress_manager = require("chatml.progress_manager")
 
+---@types integer?
+local last_job_id = nil
+
 ---@class ChatMLLLM
 local M = {}
 
@@ -864,7 +867,29 @@ M.chat_completion = function(in_buf, out_buf)
   )
 
   progress_manager:finish_handle(main_progress_id, "Request sent to LLM")
-  M.client:chat_completion_create(request, completion_callback, streaming_callback, on_stdout_callback)
+
+  local on_exit = function(_, code, _)
+    if code ~= 0 then
+      vim.notify("LLM request failed with exit code: " .. code, vim.log.levels.ERROR)
+    else
+      vim.notify("LLM request completed successfully", vim.log.levels.INFO)
+    end
+    progress_manager:clear()
+  end
+
+  last_job_id =
+    M.client:chat_completion_create(request, completion_callback, streaming_callback, on_stdout_callback, nil, on_exit)
+end
+
+M.cancel_last_job = function()
+  if last_job_id then
+    local status = vim.fn.jobstop(last_job_id)
+
+    last_job_id = nil
+    vim.notify("Last job cancelled with status: " .. status, vim.log.levels.INFO)
+  else
+    vim.notify("No job to cancel", vim.log.levels.WARN)
+  end
 end
 
 return M

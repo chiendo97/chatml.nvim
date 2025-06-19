@@ -128,6 +128,14 @@ local function setup_buffer_keymaps(buf)
     silent = true,
     desc = "Paste selection into chat",
   })
+
+  -- Create global keymap for stopping LLM generation
+  vim.keymap.set("n", "<leader>ls", function()
+    require("chatml.llm").cancel_last_job()
+  end, {
+    silent = true,
+    desc = "Stop LLM generation",
+  })
 end
 
 ---@return nil

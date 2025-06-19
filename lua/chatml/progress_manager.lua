@@ -75,6 +75,11 @@ function ProgressManager:has_handle(id)
   return self.handles[id] ~= nil
 end
 
+---Clear fidget notifications
+function ProgressManager:clear()
+  vim.cmd("Fidget clear")
+end
+
 -- Create and export singleton instance
 local progress_manager = ProgressManager:new()
 
