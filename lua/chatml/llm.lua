@@ -677,7 +677,7 @@ local function handle_stream_completion(progress_id, state, out_buf, chunk_count
     append_lines_to_buffer(out_buf, func_lines)
   end
 
-  append_lines_to_buffer(out_buf, { "", "---" })
+  append_lines_to_buffer(out_buf, { "---" })
 
   progress_manager:finish_handle(
     progress_id,
@@ -771,9 +771,12 @@ local function create_streaming_callback(out_buf)
     end
 
     if delta.tool_calls then
+      local tool_call_id = nil
       for _, tool_call in ipairs(delta.tool_calls) do
         local func_call = tool_call["function"]
-        local tool_call_id = tool_call.id
+        if tool_call.id then
+          tool_call_id = tool_call.id
+        end
 
         content_length = content_length + #(func_call.name or "") + #(func_call.arguments or "")
         progress_manager:update_handle(

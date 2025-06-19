@@ -142,49 +142,42 @@ end
 M.picker = function()
   local is_snacks, snacks = pcall(require, "snacks")
   if is_snacks then
-    local items = {}
+    local dir_cmd = { "ls", "-t", chat_dir }
+    -- We will run the vim.system asynchronously
+    vim.system(dir_cmd, { text = true }, function(obj)
+      if obj.code ~= 0 then
+        error("Failed to list chat files: " .. (obj.stderr or "Unknown error"))
+        return
+      end
 
-    local md_files = vim.fn.globpath(chat_dir, "*.md", true, true)
-    table.sort(md_files, function(a, b)
-      return a > b
+      -- Split output lines asynchronously
+      local md_files = vim.split(obj.stdout, "\n")
+      -- Remove empty entries
+      md_files = vim.tbl_filter(function(file)
+        return file ~= ""
+      end, md_files)
+
+      local items = {}
+      for i, file in ipairs(md_files) do
+        table.insert(items, {
+          idx = i,
+          score = i,
+          text = file,
+          file = chat_dir .. "/" .. file,
+        })
+      end
+
+      vim.schedule(function()
+        -- Open snacks picker with items
+        snacks.picker({
+          items = items,
+          confirm = function(picker, item)
+            picker:close()
+            M.open_chat(item.file)
+          end,
+        })
+      end)
     end)
-
-    for i, file in ipairs(md_files) do
-      table.insert(items, {
-        idx = i,
-        score = i,
-        text = file,
-        file = file,
-      })
-    end
-
-    snacks.picker({
-      items = items,
-      confirm = function(picker, item)
-        picker:close()
-        local filename = item.file
-        M.open_chat(filename)
-      end,
-    })
-
-    return
-  end
-
-  local is_fzf, fzf = pcall(require, "fzf-lua")
-  if is_fzf then
-    fzf.files({
-      cwd = chat_dir,
-      prompt = "Chat Files> ",
-      actions = {
-        ["default"] = function(selected)
-          if not selected or #selected == 0 then
-            return
-          end
-          local filename = chat_dir .. "/" .. selected[1]
-          M.open_chat(filename)
-        end,
-      },
-    })
     return
   end
 
