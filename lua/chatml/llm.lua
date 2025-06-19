@@ -78,6 +78,8 @@ local function add_tools_to_request(request, tools)
     table.insert(request["tools"], tool_to_function_def(tool))
   end
 
+  request.parallel_tool_calls = false
+
   return request
 end
 
@@ -309,14 +311,11 @@ local function handle_tool_success(progress_id, out_buf, server_name, func_name,
   local func_name_lines = format_function_name_lines(string.format("%s-%s", server_name, func_name), tool_call_id)
   local content_lines = split_content_to_lines(result_content)
 
-  -- TODO: remove vim.schedule
-  vim.schedule(function()
-    append_lines_to_buffer(out_buf, { "", "# tool", "" })
-    append_lines_to_buffer(out_buf, func_name_lines)
-    append_lines_to_buffer(out_buf, content_lines)
-    append_lines_to_buffer(out_buf, { "", "---" })
-    progress_manager:finish_handle(progress_id, "Tool call completed successfully")
-  end)
+  append_lines_to_buffer(out_buf, { "", "# tool", "" })
+  append_lines_to_buffer(out_buf, func_name_lines)
+  append_lines_to_buffer(out_buf, content_lines)
+  append_lines_to_buffer(out_buf, { "", "---" })
+  progress_manager:finish_handle(progress_id, "Tool call completed successfully")
 end
 
 ---Create tool result callback
@@ -776,7 +775,7 @@ local function create_streaming_callback(out_buf)
         content_length = content_length + #(func_call.name or "") + #(func_call.arguments or "")
         progress_manager:update_handle(
           progress_id,
-          string.format("Receiving function call... (%d chars, %d chunks)", content_length, chunk_count),
+          string.format("Receiving tool call %s ... (%d chars, %d chunks)", tool_call_id, content_length, chunk_count),
           nil
         )
 

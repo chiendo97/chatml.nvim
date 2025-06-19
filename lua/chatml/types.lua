@@ -52,6 +52,7 @@
 ---@field messages ChatMLMessage[]
 ---@field tools? table[] -- Array of tool definitions (OpenAI format)
 ---@field stream? boolean
+---@field parallel_tool_calls? boolean
 ---@field [string] any -- Allow other provider-specific fields
 
 ---@class ChatMLParse
