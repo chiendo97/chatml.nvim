@@ -677,7 +677,11 @@ local function handle_stream_completion(progress_id, state, out_buf, chunk_count
     append_lines_to_buffer(out_buf, func_lines)
   end
 
-  append_lines_to_buffer(out_buf, { "---" })
+  if state.tool_call_id then
+    append_lines_to_buffer(out_buf, { "---" })
+  else
+    append_lines_to_buffer(out_buf, { "", "---" })
+  end
 
   progress_manager:finish_handle(
     progress_id,
