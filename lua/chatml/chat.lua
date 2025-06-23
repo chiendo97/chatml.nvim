@@ -133,6 +133,7 @@ local function setup_buffer_keymaps(buf)
   vim.keymap.set("n", "<leader>ls", function()
     require("chatml.llm").cancel_last_job()
   end, {
+    buffer = buf,
     silent = true,
     desc = "Stop LLM generation",
   })
@@ -171,6 +172,7 @@ M.picker = function()
         -- Open snacks picker with items
         snacks.picker({
           items = items,
+          prompt = "Select a chat file: ",
           confirm = function(picker, item)
             picker:close()
             M.open_chat(item.file)
@@ -184,6 +186,19 @@ M.picker = function()
   -- Fallback to vim.ui.select
   local chats = vim.fn.glob(chat_dir .. "/*.md", false, true)
   handle_file_selection(chats)
+end
+
+M.search = function()
+  local is_snacks, snacks = pcall(require, "snacks")
+  if is_snacks then
+    snacks.picker.grep({
+      cwd = chat_dir,
+      prompt = "Search ChatML Chats: ",
+    })
+    return
+  end
+
+  vim.notify("Snacks not found", vim.log.levels.WARN)
 end
 
 --- Creates a new chat file with a template and opens it
