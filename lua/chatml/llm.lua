@@ -113,7 +113,7 @@ end
 ---@param role string The message role
 ---@return string[] lines The formatted role header lines
 local function format_role_header(role)
-  return { "", "# " .. role, "", "" }
+  return { "", "# " .. role, "" }
 end
 
 ---Format function call lines
