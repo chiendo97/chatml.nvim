@@ -108,34 +108,46 @@ local function move_cursor_to_end(bufnr)
   vim.api.nvim_win_set_cursor(0, { line_count, 0 })
 end
 
--- Helper function to setup buffer keymaps
----@param buf integer
----@return nil
-local function setup_buffer_keymaps(buf)
-  -- Create buffer-local keymap for chat completion
-  vim.keymap.set("n", "<leader>ll", function()
-    llm.chat_completion(buf)
-  end, {
-    buffer = buf,
-    silent = true,
-    desc = "Trigger chat completion",
-  })
+-- Setup autocmd to create keymaps when entering chat files
+M.setup_chat_autocmd = function()
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = vim.api.nvim_create_augroup("ChatMLChat", { clear = true }),
+    pattern = chat_dir .. "/*.md",
+    callback = function(event)
+      local buf = event.buf
 
-  -- Create global keymap for pasting selection
-  vim.keymap.set("x", "<leader>lp", function()
-    M.paste_selection()
-  end, {
-    silent = true,
-    desc = "Paste selection into chat",
-  })
+      -- Create buffer-local keymap for chat completion
+      vim.keymap.set("n", "<leader>ll", function()
+        llm.chat_completion(buf)
+      end, {
+        buffer = buf,
+        silent = true,
+        desc = "Trigger chat completion",
+      })
 
-  -- Create global keymap for stopping LLM generation
-  vim.keymap.set("n", "<leader>ls", function()
-    require("chatml.llm").cancel_last_job()
-  end, {
-    buffer = buf,
-    silent = true,
-    desc = "Stop LLM generation",
+      -- Create global keymap for pasting selection
+      vim.keymap.set("x", "<leader>lp", function()
+        M.paste_selection()
+      end, {
+        silent = true,
+        desc = "Paste selection into chat",
+      })
+
+      -- Create global keymap for stopping LLM generation
+      vim.keymap.set("n", "<leader>ls", function()
+        require("chatml.llm").cancel_last_job()
+      end, {
+        buffer = buf,
+        silent = true,
+        desc = "Stop LLM generation",
+      })
+
+      -- Store last buffer for quick access
+      if last_buf ~= buf then
+        vim.notify("Chat buffer opened: " .. vim.api.nvim_buf_get_name(buf), vim.log.levels.INFO)
+      end
+      last_buf = buf
+    end,
   })
 end
 
@@ -242,12 +254,6 @@ M.open_chat = function(filename)
 
   -- Set up buffer-local configuration
   local buf = vim.api.nvim_get_current_buf()
-
-  -- Store last buffer for quick access
-  last_buf = buf
-
-  -- Setup keymaps
-  setup_buffer_keymaps(buf)
 
   -- Move cursor to the end of the buffer
   move_cursor_to_end(buf)
