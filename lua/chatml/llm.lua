@@ -15,6 +15,20 @@ M.client = ai.Client:new()
 -- PURE UTILITY FUNCTIONS
 -- ============================================================================
 
+---Get hub instance with error handling
+---@return MCPHub.Hub|nil hub Hub instance (specific type depends on mcphub)
+local function get_hub_instance()
+  local ok, mcphub = pcall(require, "mcphub")
+  if not ok then
+    return nil
+  end
+  local hub = mcphub.get_hub_instance()
+  if not hub then
+    error("No hub instance found. Please ensure mcphub is properly initialized.")
+  end
+  return hub
+end
+
 ---Split content into lines
 ---@param content string Content to split
 ---@return string[] lines The split content lines
@@ -267,9 +281,15 @@ end
 ---Get tools from hub
 ---@return EnhancedMCPTool[] tools Available tools
 local function get_available_tools()
-  local hub = require("mcphub").get_hub_instance()
+  local ok, mcphub = pcall(require, "mcphub")
+  if not ok then
+    vim.notify_once("Failed to require mcphub", vim.log.levels.ERROR)
+    return {}
+  end
+
+  local hub = get_hub_instance()
   if not hub then
-    vim.notify("LLM hub is nil", vim.log.levels.ERROR)
+    vim.notify_once("No hub instance found", vim.log.levels.ERROR)
     return {}
   end
 
@@ -345,16 +365,6 @@ local function create_tool_result_callback(out_buf, server_name, func_name, tool
   end
 end
 
----Get hub instance with error handling
----@return MCPHub.Hub hub Hub instance (specific type depends on mcphub)
-local function get_hub_instance()
-  local hub = require("mcphub").get_hub_instance()
-  if not hub then
-    error("No hub instance found. Please ensure mcphub is properly initialized.")
-  end
-  return hub
-end
-
 ---Execute tool call asynchronously
 ---@param server_name string Server name
 ---@param func_name string Function name
@@ -365,6 +375,10 @@ end
 local function async_call_tool_and_append(server_name, func_name, func_args, out_buf, tool_call_id)
   local callback = create_tool_result_callback(out_buf, server_name, func_name, tool_call_id)
   local hub = get_hub_instance()
+  if not hub then
+    vim.notify("No hub instance found for tool call", vim.log.levels.ERROR)
+    return
+  end
 
   hub:call_tool(server_name, func_name, func_args, {
     parse_response = true,
