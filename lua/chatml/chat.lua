@@ -27,7 +27,7 @@ end
 -- Helper function to create chat template
 ---@return string
 local function create_chat_template()
-  local system_prompt = "You are a developer-focused AI assistant within Neovim.\n\n"
+  local system_prompt = "You are a developer-focused AI assistant.\n\n"
     .. "Guidelines for our interaction:\n\n"
     .. "- Prioritize code completeness - never truncate code in your responses\n"
     .. "- Admit uncertainty rather than guessing when you don't know something\n"
@@ -41,7 +41,7 @@ local function create_chat_template()
 
   return table.concat({
     "---",
-    "model: gpt-4.1-mini",
+    "model: openai/gpt-5-codex",
     "stream: true",
     "---",
     "",

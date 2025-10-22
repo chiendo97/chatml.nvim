@@ -485,6 +485,11 @@ local function process_streaming_chunk(raw_str, buffer, callback)
     return buffer
   end
 
+  -- ignore if `OPENROUTER PROCESSING` in raw_str
+  if raw_str:find("OPENROUTER PROCESSING") then
+    return buffer
+  end
+
   buffer = buffer .. raw_str
   local str = buffer:match("^data: (.+)") or buffer
 
