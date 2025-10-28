@@ -36,12 +36,13 @@ local function split_content_to_lines(content)
   return vim.split(content, "\n", { plain = true, trimempty = false })
 end
 
----Parse function name from tool call format
+---Parse function name from tool call format, allowing function names to contain '-'
 ---@param func_call_name string Function call name in format "server-function"
 ---@return string? server_name Server name
 ---@return string? func_name Function name
 local function parse_tool_name(func_call_name)
-  return func_call_name:match("([^%-]+)%-([^%-]+)")
+  local server_name, func_name = func_call_name:match("^([^%-]+)%-(.+)$")
+  return server_name, func_name
 end
 
 ---Parse function arguments from JSON string
@@ -281,7 +282,7 @@ end
 ---Get tools from hub
 ---@return EnhancedMCPTool[] tools Available tools
 local function get_available_tools()
-  local ok, mcphub = pcall(require, "mcphub")
+  local ok, _ = pcall(require, "mcphub")
   if not ok then
     vim.notify_once("Failed to require mcphub", vim.log.levels.ERROR)
     return {}
