@@ -38,10 +38,11 @@ local function create_chat_template()
     .. "- Optimize for readability and maintainability in code suggestions\n"
     .. "- Consider performance implications when applicable\n"
     .. "- Always use `----` instead of `---` for separators\n"
+    .. "- Use Markdown format with headers starting from level 2\n"
 
   return table.concat({
     "---",
-    "model: openai/gpt-5-codex",
+    "model: openai/gpt-5-mini",
     "stream: true",
     "---",
     "",
