@@ -5,7 +5,6 @@ local M = {}
 ---@param opts ChatMLOptions: plugin options table
 M.setup = function(opts)
   require("chatml.config").setup(opts)
-  require("chatml.chat").setup_chat_autocmd()
 end
 
 return M

@@ -105,7 +105,6 @@
 ---@class ChatMLChat
 ---@field picker fun(): nil
 ---@field new_chat fun(): nil
----@field open_chat fun(filename: string): nil
 ---@field paste_selection fun(): nil
 
 ---------------------------------------------------------------------------------
