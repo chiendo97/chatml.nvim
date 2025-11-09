@@ -1,4 +1,3 @@
-local log = require("chatml.log")
 local yaml = require("chatml.yaml")
 
 ---@class ChatMLParse
@@ -12,401 +11,234 @@ local VALID_ROLES = {
   system = true,
   tool = true,
   user = true,
-  ["function"] = true,
 }
 
----Validate a single ChatML message
----@param msg any The message to validate
----@return boolean valid True if message is valid
----@return string? error Error message if invalid
-local function validate_message(msg)
-  if type(msg) ~= "table" or not msg.role then
-    return false, "Each message must be a table with a 'role' key"
+---Convert JSON string of chat completion request to markdown
+---@param json_str string JSON string of chat completion request
+---@return string markdown Markdown string of chat completion request
+M.json_to_md = function(json_str)
+  -- Parse JSON string
+  local ok, data = pcall(vim.json.decode, json_str, { luanil = { object = true, array = true } })
+  if not ok then
+    error("Invalid JSON string")
+  end
+  if data == nil then
+    error("Parsed (json) data is nil")
   end
 
-  if not VALID_ROLES[msg.role] then
-    return false, "Invalid role: " .. tostring(msg.role)
-  end
-
-  if msg.content == nil and msg.function_call == nil and not (msg.role == "function" and msg.name) then
-    return false, "Each message must have 'content', or 'function_call', or 'name' (for role=function)"
-  end
-
-  return true
-end
-
----Validate ChatML request structure
----@param data table The parsed JSON data
----@return boolean valid True if request is valid
----@return string? error Error message if invalid
-local function validate_request(data)
+  -- Validate messages key exists
   if not data.messages then
-    return false, "Messages key not found in JSON"
+    error("Messages key not found in JSON")
   end
 
+  -- Validate model key exists
   if not data.model then
-    return false, "Model key not found in JSON"
+    error("Model key not found in JSON")
   end
 
+  -- Validate each message: check type, role, and content
   for _, msg in ipairs(data.messages) do
-    local valid, err = validate_message(msg)
-    if not valid then
-      return false, err
+    if type(msg) ~= "table" or not msg.role then
+      error("Each message must be a table with a 'role' key")
+    end
+
+    if not VALID_ROLES[msg.role] then
+      error("Invalid role: " .. tostring(msg.role))
+    end
+
+    if msg.content == nil then
+      error("Each message must have 'content'")
     end
   end
 
-  return true
-end
-
----Extract metadata from request, excluding messages and functions
----@param data ChatMLRequest The request data
----@return table metadata The metadata without messages/functions
-local function extract_metadata(data)
+  -- Extract metadata (all keys except messages and functions)
   local metadata = {}
   for key, value in pairs(data) do
     if key ~= "messages" and key ~= "functions" then
       metadata[key] = value
     end
   end
-  return metadata
-end
-
----Format a single message as markdown
----@param msg ChatMLMessage The message to format
----@return string markdown The formatted markdown string
-local function format_message_as_markdown(msg)
-  local parts = { "\n# " .. msg.role .. "\n" }
-
-  -- Add function_call if present
-  if msg.function_call then
-    table.insert(parts, "\n### function_call: " .. tostring(msg.function_call.name) .. "\n\n")
-    local args = (msg.function_call.arguments or ""):gsub("%s+$", "")
-    table.insert(parts, "```json\n" .. args .. "\n```\n")
-  end
-
-  -- Add function name if present and role is "function"
-  if msg.role == "function" and msg.name then
-    table.insert(parts, "\n### function: " .. tostring(msg.name) .. "\n")
-  end
-
-  -- Add content if present
-  if msg.content then
-    table.insert(parts, "\n" .. msg.content .. "\n")
-  end
-
-  table.insert(parts, "\n---\n")
-  return table.concat(parts)
-end
-
----Parse JSON string into table
----@param json_str string JSON string to parse
----@return table? data Parsed data or nil on error
----@return string? error Error message if parsing failed
-local function parse_json_string(json_str)
-  local ok, data = pcall(vim.json.decode, json_str, { luanil = { object = true, array = true } })
-  if not ok then
-    return nil, "Invalid JSON string"
-  end
-  if data == nil then
-    return nil, "Parsed (json) data is nil"
-  end
-  return data
-end
-
----Convert JSON string of chat completion request to markdown
----@param json_str string JSON string of chat completion request
----@return string? markdown Markdown string of chat completion request
----@return string? error Error message if conversion failed
-M.json_to_md_pure = function(json_str)
-  local data, parse_err = parse_json_string(json_str)
-  if not data then
-    return nil, parse_err
-  end
-
-  local valid, validation_err = validate_request(data)
-  if not valid then
-    return nil, validation_err
-  end
-
-  local metadata = extract_metadata(data)
+  -- Trim leading/trailing whitespace from YAML metadata
   local metadata_str = yaml.encode(metadata):gsub("^%s+", ""):gsub("%s+$", "")
 
+  -- Build markdown output
   local parts = { "---\n" .. metadata_str .. "\n---\n" }
 
   for _, msg in ipairs(data.messages) do
-    table.insert(parts, format_message_as_markdown(msg))
+    local msg_parts = { "\n# " .. msg.role .. "\n" }
+
+    -- Add tool_calls if present (## tool_call: func (id=...) ```json...)
+    if msg.tool_calls and #msg.tool_calls > 0 then
+      for _, tool_call in ipairs(msg.tool_calls) do
+        table.insert(msg_parts, "\n## tool_call: " .. tool_call["function"].name .. " (id=" .. tool_call.id .. ")\n\n")
+        table.insert(msg_parts, "```json\n" .. tool_call["function"].arguments .. "\n```\n")
+      end
+    end
+
+    -- Add tool_call_id for tool role messages (## tool: name (id=...) ````json...)
+    if msg.role == "tool" and msg.tool_call_id then
+      table.insert(msg_parts, "\n## tool: " .. (msg.name or "response") .. " (id=" .. msg.tool_call_id .. ")\n\n")
+      table.insert(msg_parts, "````json\n" .. msg.content .. "\n````\n")
+    elseif msg.content then
+      -- Add content for regular messages
+      table.insert(msg_parts, "\n" .. msg.content .. "\n")
+    end
+
+    table.insert(parts, table.concat(msg_parts))
   end
 
-  return table.concat(parts):gsub("%s+$", ""), nil
+  -- Trim trailing whitespace from entire markdown output
+  return table.concat(parts):gsub("%s+$", "")
 end
 
----Convert JSON string of chat completion request to markdown (with error throwing)
----@param json_str string JSON string of chat completion request
----@return string markdown Markdown string of chat completion request
-M.json_to_md = function(json_str)
-  local result, err = M.json_to_md_pure(json_str)
-  if not result then
-    log.debug(err)
-    error(err)
-  end
-  return result
-end
-
----Parse markdown front matter
----@param md_str string Markdown string with front matter
----@return table? config Parsed front matter or nil on error
----@return string? content Content after front matter
----@return string? error Error message if parsing failed
-local function parse_markdown_front_matter(md_str)
+---Convert markdown string of chat completion request to JSON
+---@param md_str string Markdown string of chat completion request
+---@return string json JSON string of chat completion request
+M.md_to_json = function(md_str)
+  -- Parse YAML front matter: Extract metadata between ---\n...\n---
+  -- Pattern: ^---\n(.*)\n---(.*)$ - captures front matter and remaining content
   local front_matter, content = md_str:match("^%-%-%-\n(.-)\n%-%-%-(.*)$")
   if not front_matter or #front_matter == 0 then
-    return nil, nil, "Cannot parse Markdown string"
+    error("Cannot parse front matter string")
   end
 
   local ok, config = pcall(yaml.decode, front_matter)
   if not ok then
-    return nil, nil, "Cannot parse front matter YAML"
+    error("Cannot parse front matter YAML")
   end
 
   if config == nil then
-    return nil, nil, "Parsed (yaml) config is nil"
+    error("Front matter config is nil")
   end
 
   if type(config) ~= "table" then
-    return nil, nil, "Parsed front matter is not a table"
+    error("Parsed front matter is not a table")
   end
 
   if not config.model then
-    return nil, nil, "Model key not found in front matter"
+    error("Model key not found in front matter")
   end
 
   if #content == 0 then
-    return nil, nil, "Content after front matter is empty"
+    error("Content after front matter is empty")
   end
 
-  return config, content
-end
-
----Parse function call block from message content
----@param content string Message content
----@return string? func_name Function name
----@return string? func_args Function arguments
----@return string cleaned_content Content with function call block removed
-local function parse_function_call_block(content)
-  local func_call_name, func_call_args = content:match("### function_call:%s*(%S+)%s-```json\n(.-)```")
-
-  if func_call_name and func_call_args then
-    local cleaned_content = content
-      :gsub("### function_call:%s*" .. vim.pesc(func_call_name) .. "%s-```json\n.-```%s*", "")
-      :gsub("^%s+", "")
-      :gsub("%s+$", "")
-    return func_call_name, func_call_args, cleaned_content
-  end
-
-  return nil, nil, content
-end
-
----Parse function name block for function role
----@param content string Message content
----@return string? func_name Function name
----@return string? rest_content Remaining content
-local function parse_function_name_block(content)
-  local func_name, rest_content = content:match("### function:%s*(%S+)%s*\n(.+)")
-  if func_name then
-    return func_name, rest_content and rest_content:gsub("^%s+", "") or ""
-  end
-  return nil, content
-end
-
----Read file content and return it as string
----@param filepath string Path to the file to read
----@return string? content File content or nil if file cannot be read
----@return string? error Error message if file reading failed
-local function read_file_content(filepath)
-  local file = io.open(filepath, "r")
-  if not file then
-    return nil, "Cannot open file: " .. filepath
-  end
-
-  local content = file:read("*all")
-  file:close()
-
-  if not content then
-    return nil, "Cannot read file content: " .. filepath
-  end
-
-  return content
-end
-
----@param content string Message content
----@return ChatMLToolCall[] tool_calls List of tool calls found in the content
----@return string new_content Content after removing tool call blocks
-local function parse_tool_call_block(content)
-  -- find all tool_call blocks like:
-  -- ### tool_call: func (id=123) ... ```json ... ```
-  ---@type ChatMLToolCall[]
-  local tool_calls = {}
-  local new_content = content
-  local pattern = "### tool_call:%s*(%S+)%s*%(%s*id%s*=%s*([^%)]+)%)%s*```json\n(.-)```"
-  local found_any = false
-  for func, id, args in content:gmatch(pattern) do
-    found_any = true
-    table.insert(tool_calls, {
-      id = id,
-      type = "function",
-      ["function"] = {
-        name = func,
-        arguments = args,
-      },
-    })
-  end
-
-  if found_any then
-    -- Remove all matched tool_call blocks from content
-    new_content = content:gsub("\n?### tool_call:%s*%S+%s*%(%s*id%s*=%s*[^%)]+%)%s*```json\n.-```%s*", "")
-    new_content = new_content:gsub("^%s+", ""):gsub("%s+$", "")
-  end
-
-  return tool_calls, new_content
-end
-
----@param content string Message content
----@return string? tool_call_id Tool call ID if present
----@return string msg_content Remaining content after tool call ID extraction
-local function parse_tool_message_block(content)
-  -- only for role == 'tool', requires tool_call_id
-  -- ### tool: reddit-fetch_reddit_hot_threads (id=call_1ccPSUE6rZnJQlGqLQePBMsb)
-  -- ````json
-  -- <tool-content>
-  -- ````
-  local tool_call_id, tool_content = content:match("### tool:%s*%S+%s*%(%s*id%s*=%s*([^%)]+)%)%s*````json\n(.-)\n````")
-  return tool_call_id, tool_content or ""
-end
-
----Parse a single message from markdown content
----@param role string Message role
----@param msg_content string Message content
----@return ChatMLMessage message Parsed message
-local function parse_message_from_markdown(role, msg_content)
-  ---@type ChatMLMessage
-  local msg = { role = role }
-  local content_trim = msg_content:gsub("^%s+", ""):gsub("%s+$", "")
-
-  for file_path in content_trim:gmatch("\n?%-?%s*#file:([^\n]+)") do
-    file_path = file_path:gsub("^%s+", ""):gsub("%s+$", "") -- trim whitespace
-
-    local file_content, err = read_file_content(file_path)
-    if err then
-      vim.notify("Error reading file: " .. file_path .. " - " .. err, vim.log.levels.WARN)
-      file_content = "Error: " .. err
-    end
-
-    if file_content then
-      content_trim = string.format("%s\n\n````%s\n%s\n````", content_trim, file_path, file_content)
-    end
-  end
-
-  -- Tool message special parse:
-  if role == "tool" then
-    local tool_call_id, tool_content = parse_tool_message_block(content_trim)
-    msg.tool_call_id = tool_call_id
-    msg.content = tool_content
-    return msg
-  end
-
-  -- tool_calls parsing (multiple):
-  local tool_calls, after = parse_tool_call_block(content_trim)
-  if #tool_calls > 0 then
-    msg.tool_calls = tool_calls
-    content_trim = after
-  end
-
-  local func_call_name, func_call_args, cleaned_content = parse_function_call_block(content_trim)
-
-  if func_call_name and func_call_args then
-    msg.function_call = {
-      name = func_call_name,
-      arguments = func_call_args,
-    }
-    if #cleaned_content > 0 then
-      msg.content = cleaned_content
-    end
-  elseif role == "function" then
-    local func_name, rest_content = parse_function_name_block(content_trim)
-    if func_name then
-      msg.name = func_name
-      msg.content = rest_content
-    else
-      msg.content = content_trim
-    end
-  else
-    msg.content = content_trim
-  end
-
-  return msg
-end
-
----Extract messages from markdown content
----@param content string Markdown content after front matter
----@return ChatMLMessage[]? messages Extracted messages or nil on error
----@return string? error Error message if extraction failed
-local function extract_messages_from_markdown(content)
+  -- Extract messages from markdown content
   local messages = {}
-  local pattern = "\n# (%w+)\n\n(.-)\n\n%-%-%-%f[^-]"
+  -- Find message blocks by looking for \n# role headers
+  -- Parse each message by finding content between headers
+  local pos = 1
 
-  for role, msg_content in content:gmatch(pattern) do
-    if not VALID_ROLES[role] then
-      return nil, "Invalid role: " .. role
+  while pos <= #content do
+    local start, end_pos, role = content:find("# (%w+)\n\n", pos)
+    if not start then
+      break
     end
-    table.insert(messages, parse_message_from_markdown(role, msg_content))
+
+    if not VALID_ROLES[role] then
+      error("Invalid role: " .. role)
+    end
+
+    -- Find the start of the next message (or end of content)
+    local next_msg_pos = content:find("\n# ", end_pos + 1)
+    local msg_end_pos = next_msg_pos or #content + 1
+
+    -- Extract content between current header and next message
+    -- Extracts the substring from `content` starting right after `end_pos` up to just before `msg_end_pos`,
+    -- then trims any leading and trailing whitespace from this substring.
+    local content_trim = content:sub(end_pos + 1, msg_end_pos - 1):gsub("^%s+", ""):gsub("%s+$", "")
+
+    -- Parse a single message from markdown content
+    ---@type ChatMLMessage
+    local msg = { role = role }
+
+    -- Process file includes: @path pattern
+    -- Pattern: (\n?-?\s*@([^\n]+)) - finds optional newline, dash, and @path
+    for file_path in content_trim:gmatch("\n?%-?%s*@([^\n]+)") do
+      file_path = file_path:gsub("^%s+", ""):gsub("%s+$", "")
+
+      local file = io.open(file_path, "r")
+      local file_content
+      if not file then
+        vim.notify("Error reading file: " .. file_path .. " - Cannot open file: " .. file_path, vim.log.levels.WARN)
+        file_content = "Error: Cannot open file: " .. file_path
+      else
+        file_content = file:read("*all")
+        file:close()
+        if not file_content then
+          vim.notify(
+            "Error reading file: " .. file_path .. " - Cannot read file content: " .. file_path,
+            vim.log.levels.WARN
+          )
+          file_content = "Error: Cannot read file content: " .. file_path
+        end
+      end
+
+      if file_content then
+        content_trim = string.format("%s\n\n````%s\n%s\n````", content_trim, file_path, file_content)
+      end
+    end
+
+    -- Handle tool role messages: extract tool_call_id from ## tool: name (id=...) format
+    if role == "tool" then
+      -- Pattern: ## tool: func (id=...) ````json\n(content)\n````
+      -- Extracts tool name, call ID, and JSON response content
+      local _, tool_call_id, tool_content =
+        content_trim:match("## tool:%s*(%S+)%s*%(%s*id%s*=%s*([^%)]+)%)%s*````json\n(.-)\n````")
+      msg.tool_call_id = tool_call_id
+      msg.content = tool_content or ""
+      table.insert(messages, msg)
+    else
+      -- Parse tool_calls blocks: ## tool_call: func (id=...) ```json...```
+      local tool_calls = {}
+      -- Pattern: ## tool_call: func (id=...) ```json\n(args)```
+      -- Captures function name, call ID, and JSON arguments
+      local pattern_tool = "## tool_call:%s*(%S+)%s*%(%s*id%s*=%s*([^%)]+)%)%s*```json\n(.-)```"
+      local found_any = false
+      for func, id, args in content_trim:gmatch(pattern_tool) do
+        found_any = true
+        table.insert(tool_calls, {
+          id = id,
+          type = "function",
+          ["function"] = {
+            name = func,
+            arguments = args,
+          },
+        })
+      end
+
+      if found_any then
+        msg.tool_calls = tool_calls
+        -- Remove all matched tool_call blocks from content
+        -- Pattern: \n?## tool_call: func (id=...) ```json\n...\n``` with optional trailing space
+        content_trim = content_trim:gsub("\n?## tool_call:%s*%S+%s*%(%s*id%s*=%s*[^%)]+%)%s*```json\n.-```%s*", "")
+        -- Trim leading/trailing whitespace after removal
+        content_trim = content_trim:gsub("^%s+", ""):gsub("%s+$", "")
+      end
+
+      -- For non-tool messages, use the trimmed content as-is
+      if #content_trim > 0 then
+        msg.content = content_trim
+      end
+
+      table.insert(messages, msg)
+    end
+
+    pos = next_msg_pos or #content + 1
   end
 
   if #messages == 0 then
-    return nil, "No messages found"
-  end
-
-  return messages
-end
-
----Convert markdown string to JSON (pure function)
----@param md_str string Markdown string of chat completion request
----@return string? json JSON string or nil on error
----@return string? error Error message if conversion failed
-M._md_to_json = function(md_str)
-  local config, content, parse_err = parse_markdown_front_matter(md_str)
-  if not config then
-    return nil, parse_err
-  end
-
-  if content == nil then
-    return nil, "Content is nil"
-  end
-
-  local messages, err = extract_messages_from_markdown(content)
-  if not messages then
-    return nil, err
+    error("No messages found")
   end
 
   config.messages = messages
 
-  local ok, json_str = pcall(vim.json.encode, config)
-  if not ok then
-    return nil, "Cannot encode table to json string"
+  local ok_encode, json_str = pcall(vim.json.encode, config)
+  if not ok_encode then
+    error("Cannot encode table to json string")
   end
 
   return json_str
-end
-
----Convert markdown string of chat completion request to JSON (with error throwing)
----@param md_str string Markdown string of chat completion request
----@return string json JSON string of chat completion request
-M.md_to_json = function(md_str)
-  local result, err = M._md_to_json(md_str)
-  if not result then
-    log.debug(err)
-    error(err)
-  end
-  return result
 end
 
 -- Buffer operations (external dependencies)
@@ -418,7 +250,6 @@ end
 M.json_buf_to_md_buf = function(in_buf, out_buf)
   local in_ft = vim.api.nvim_get_option_value("filetype", { buf = in_buf })
   if in_ft ~= "json" then
-    log.debug("Buffer is not a JSON buffer")
     error("Buffer is not a JSON buffer")
   end
   local json_str = table.concat(vim.api.nvim_buf_get_lines(in_buf, 0, -1, false), "\n")
@@ -429,7 +260,6 @@ M.json_buf_to_md_buf = function(in_buf, out_buf)
     vim.api.nvim_buf_set_lines(out_buf, 0, -1, false, vim.split(md_str, "\n"))
     return out_buf
   else
-    log.debug("Generated md_str is nil")
     error("Generated md_str is nil")
   end
 end
@@ -441,7 +271,6 @@ end
 M.md_buf_to_json_buf = function(in_buf, out_buf)
   local in_ft = vim.api.nvim_get_option_value("filetype", { buf = in_buf })
   if in_ft ~= "markdown" then
-    log.debug("Buffer is not a markdown buffer")
     error("Buffer is not a markdown buffer")
   end
   local md_str = table.concat(vim.api.nvim_buf_get_lines(in_buf, 0, -1, false), "\n")
@@ -452,7 +281,6 @@ M.md_buf_to_json_buf = function(in_buf, out_buf)
     vim.api.nvim_buf_set_lines(out_buf, 0, -1, false, vim.split(json_str, "\n"))
     return out_buf
   else
-    log.debug("Generated md_str is nil")
     error("Generated md_str is nil")
   end
 end

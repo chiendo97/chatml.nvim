@@ -101,11 +101,11 @@ local function add_tools_to_request(request, tools)
   return request
 end
 
----Check if message has function call
+---Check if message has tool calls
 ---@param message ChatMLMessage Chat message
----@return boolean has_function_call Whether message has function call
-local function has_function_call(message)
-  return message ~= nil and (message.function_call ~= nil or (message.tool_calls ~= nil and #message.tool_calls > 0))
+---@return boolean has_tool_calls Whether message has tool calls
+local function has_tool_calls(message)
+  return message ~= nil and (message.tool_calls ~= nil and #message.tool_calls > 0)
 end
 
 ---Extract function call info from message
@@ -131,36 +131,24 @@ local function format_role_header(role)
   return { "", "# " .. role, "", "" }
 end
 
----Format function call lines
+---Format tool call lines
 ---@param func_name string Function name
----@param args string Function arguments
----@return string[] lines The formatted function call lines
-local function format_function_call_lines(func_name, args)
-  args = args:gsub("\n", "")
+---@param tool_call_id string Tool call identifier
+---@return string[] lines The formatted tool call lines
+local function format_tool_call_lines(func_name, tool_call_id)
   return {
-    "### function_call: " .. func_name,
-    "",
-    "```json",
-    args,
-    "```",
+    "## tool_call: " .. func_name .. " (id=" .. tool_call_id .. ")",
     "",
   }
 end
 
----Format function name lines for function role
----@param func_name string Function name
----@param tool_call_id string? Tool call identifier
----@return string[] lines The formatted function name lines
-local function format_function_name_lines(func_name, tool_call_id)
-  if tool_call_id then
-    -- ### tool: reddit-fetch_reddit_hot_threads (id=call_1ccPSUE6rZnJQlGqLQePBMsb)
-    return {
-      "### tool: " .. func_name .. " (id=" .. tool_call_id .. ")",
-      "",
-    }
-  end
+---Format tool response header
+---@param tool_name string Tool name
+---@param tool_call_id string Tool call identifier
+---@return string[] lines The formatted tool response header
+local function format_tool_response_header(tool_name, tool_call_id)
   return {
-    "### function: " .. func_name,
+    "## tool: " .. tool_name .. " (id=" .. tool_call_id .. ")",
     "",
   }
 end
@@ -251,32 +239,12 @@ local function prepare_request_from_content(md_content, tools)
   return add_tools_to_request(request, tools)
 end
 
----Ensure buffer ends with separator
+---Get buffer content for parsing
 ---@param buf integer Buffer number
----@return string content Final buffer content
-local function ensure_buffer_separator(buf)
+---@return string content Buffer content
+local function get_buffer_content(buf)
   local current_lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  local md_str = table.concat(current_lines, "\n")
-
-  local last_line_content = ""
-  if #current_lines > 0 then
-    last_line_content = current_lines[#current_lines]
-  end
-
-  if last_line_content == "---" then
-    -- Optional: could also check if current_lines[#current_lines-1] == "" for stricter ChatML format
-    return md_str
-  end
-
-  -- Append "" and "---". The `true` for strict_indexing in nvim_buf_set_lines
-  -- with start=-1, end=-1 means append.
-  vim.api.nvim_buf_set_lines(buf, -1, -1, true, { "", "---" })
-  vim.api.nvim_buf_call(buf, function()
-    vim.cmd.write()
-  end)
-
-  -- Return the new content of the buffer
-  return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+  return table.concat(current_lines, "\n")
 end
 
 ---Get tools from hub
@@ -301,7 +269,7 @@ end
 ---@param in_buf integer Input markdown buffer
 ---@return ChatMLRequest request Prepared request
 local function prepare_chat_request(in_buf)
-  local md_str = ensure_buffer_separator(in_buf)
+  local md_str = get_buffer_content(in_buf)
   local tools = get_available_tools()
   local request = prepare_request_from_content(md_str, tools)
   return request
@@ -326,19 +294,18 @@ end
 ---@param server_name string Server name
 ---@param func_name string Function name
 ---@param response MCPResponseOutput Tool response
----@param tool_call_id string? Tool call identifier
+---@param tool_call_id string Tool call identifier
 ---@return nil
 local function handle_tool_success(progress_id, out_buf, server_name, func_name, response, tool_call_id)
   progress_manager:update_handle(progress_id, "Processing tool response...", 80)
 
   local result_content = format_tool_result(response, nil)
-  local func_name_lines = format_function_name_lines(string.format("%s-%s", server_name, func_name), tool_call_id)
+  local tool_response_header = format_tool_response_header(string.format("%s-%s", server_name, func_name), tool_call_id)
   local content_lines = split_content_to_lines(result_content)
 
   append_lines_to_buffer(out_buf, { "", "# tool", "" })
-  append_lines_to_buffer(out_buf, func_name_lines)
+  append_lines_to_buffer(out_buf, tool_response_header)
   append_lines_to_buffer(out_buf, content_lines)
-  append_lines_to_buffer(out_buf, { "", "---" })
   progress_manager:finish_handle(progress_id, "Tool call completed successfully")
 end
 
@@ -387,13 +354,13 @@ local function async_call_tool_and_append(server_name, func_name, func_args, out
   })
 end
 
----Handle function call in last assistant message
+---Handle tool calls in last assistant message
 ---@param request ChatMLRequest The chat completion request
 ---@param buf integer Buffer number to append tool result
 ---@return boolean tool_called Whether a tool was called
 local function handle_last_function_call(request, buf)
   local last_msg = request.messages[#request.messages]
-  if not has_function_call(last_msg) then
+  if not has_tool_calls(last_msg) then
     return false
   end
 
@@ -409,17 +376,7 @@ local function handle_last_function_call(request, buf)
     end
   end
 
-  if not last_msg.function_call then
-    return false
-  end
-
-  local server_name, func_name, func_args = extract_function_call_info(last_msg.function_call)
-  if not (server_name and func_name) then
-    return false
-  end
-
-  async_call_tool_and_append(server_name, func_name, func_args, buf, nil)
-  return true
+  return false
 end
 
 -- ============================================================================
@@ -554,65 +511,32 @@ local function handle_chat_completion_error(progress_id, error)
   vim.notify("Chat completion error: " .. vim.inspect(error), vim.log.levels.ERROR)
 end
 
----@param func_name string
----@param tool_call_id string
----@param args string
----@return string[]
-local function format_tool_call_lines(func_name, tool_call_id, args)
-  args = args:gsub("\n", "")
-  return {
-    string.format("### tool_call: %s (id=%s)", func_name, tool_call_id),
-    "",
-    "```json",
-    args,
-    "```",
-    "",
-  }
-end
-
----Process function call message
----@param message ChatCompletionMessage Message with function call
+---Process tool calls in message
+---@param message ChatCompletionMessage Message with tool calls
 ---@param out_buf integer Output buffer
 ---@return nil
-local function process_function_call_message(message, out_buf)
+local function process_tool_calls(message, out_buf)
   for _, tool_call in ipairs(message.tool_calls or {}) do
     local function_call = tool_call["function"]
     local tool_call_id = tool_call.id or ""
 
     if function_call and function_call.name and function_call.arguments then
-      local func_lines = format_tool_call_lines(function_call.name, tool_call_id, function_call.arguments)
+      local args = function_call.arguments:gsub("\n", "")
+      local func_lines = {
+        "## tool_call: " .. function_call.name .. " (id=" .. tool_call_id .. ")",
+        "",
+        "```json",
+        args,
+        "```",
+        "",
+      }
       append_lines_to_buffer(out_buf, func_lines)
 
       local server_name, func_name_no_srv, func_args = extract_function_call_info(function_call)
       if server_name and func_name_no_srv then
-        async_call_tool_and_append(server_name, func_name_no_srv, func_args, out_buf, tool_call_id) -- Added tool_call_id
+        async_call_tool_and_append(server_name, func_name_no_srv, func_args, out_buf, tool_call_id)
       end
     end
-  end
-
-  if not message.function_call then
-    return
-  end
-
-  local func_name = message.function_call.name or ""
-  local args = message.function_call.arguments or ""
-  local func_lines = format_function_call_lines(func_name, args)
-  append_lines_to_buffer(out_buf, func_lines)
-
-  local server_name, func_name_no_srv, func_args = extract_function_call_info(message.function_call) -- Corrected: pass message.function_call
-  if server_name and func_name_no_srv then
-    async_call_tool_and_append(server_name, func_name_no_srv, func_args, out_buf, nil) -- No tool_call_id for legacy function_call
-  end
-end
-
----Process function role message
----@param message ChatCompletionMessage Message with function role
----@param out_buf integer Output buffer
----@return nil
-local function process_function_role_message(message, out_buf)
-  if message.name then
-    local func_name_lines = format_function_name_lines(message.name)
-    append_lines_to_buffer(out_buf, func_name_lines)
   end
 end
 
@@ -666,19 +590,14 @@ local function create_chat_completion_callback(out_buf)
 
     progress_manager:update_handle(progress_id, "Formatting response...", 70)
 
-    if message.function_call or message.tool_calls then
-      progress_manager:update_handle(progress_id, "Executing function/tools call...", 80)
-      process_function_call_message(message, out_buf)
-    end
-
-    if role == "function" then
-      process_function_role_message(message, out_buf)
+    if message.tool_calls then
+      progress_manager:update_handle(progress_id, "Executing tool calls...", 80)
+      process_tool_calls(message, out_buf)
     end
 
     process_message_content(message, out_buf)
-    append_lines_to_buffer(out_buf, { "---" })
 
-    if not message.function_call and not message.tool_calls then
+    if not message.tool_calls then
       append_lines_to_buffer(out_buf, { "", "# user", "" })
     end
 
@@ -695,20 +614,18 @@ end
 ---@return nil
 local function handle_stream_completion(progress_id, state, out_buf, chunk_count, content_length)
   if state.tool_call_id then
-    local func_lines = format_tool_call_lines(state.func_call_name, state.tool_call_id, state.func_call_args)
-    append_lines_to_buffer(out_buf, func_lines)
-  elseif state.func_call_name and state.func_call_args ~= "" then
-    local func_lines = format_function_call_lines(state.func_call_name, state.func_call_args)
+    local func_lines = {
+      "## tool_call: " .. state.func_call_name .. " (id=" .. state.tool_call_id .. ")",
+      "",
+      "```json",
+      state.func_call_args,
+      "```",
+      "",
+    }
     append_lines_to_buffer(out_buf, func_lines)
   end
 
-  if state.tool_call_id then
-    append_lines_to_buffer(out_buf, { "---" })
-  else
-    append_lines_to_buffer(out_buf, { "", "---" })
-  end
-
-  if not state.func_call_name and not state.tool_call_id then
+  if not state.tool_call_id then
     append_lines_to_buffer(out_buf, { "", "# user", "" })
   end
 
@@ -789,20 +706,6 @@ local function create_streaming_callback(out_buf)
       state.last_role = role
     end
 
-    if delta.function_call then
-      local func_call_size = #(delta.function_call.name or "") + #(delta.function_call.arguments or "")
-
-      content_length = content_length + func_call_size
-      progress_manager:update_handle(
-        progress_id,
-        string.format("Receiving function call... (%d chars, %d chunks)", content_length, chunk_count),
-        nil
-      )
-
-      update_function_call_state(state, delta.function_call)
-      return
-    end
-
     if delta.tool_calls then
       local tool_call_id = nil
       for _, tool_call in ipairs(delta.tool_calls) do
@@ -833,8 +736,8 @@ local function create_streaming_callback(out_buf)
     end
 
     local finish_reason = choice.finish_reason
-    if finish_reason == "stop" or finish_reason == "function_call" or finish_reason == "tool_calls" then
-      progress_manager:update_handle(progress_id, "Finalizing function call...", 90)
+    if finish_reason == "stop" or finish_reason == "tool_calls" then
+      progress_manager:update_handle(progress_id, "Finalizing tool call...", 90)
       handle_stream_completion(progress_id, state, out_buf, chunk_count, content_length)
     elseif finish_reason then
       handle_stream_error(progress_id, finish_reason)
