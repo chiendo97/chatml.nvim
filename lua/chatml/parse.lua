@@ -220,7 +220,6 @@ M.md_to_json = function(md_str)
 
     -- For any message, use the trimmed content as-is if present
     if #content_trim > 0 then
-      vim.print(content_trim)
       msg.content = content_trim
     end
 
