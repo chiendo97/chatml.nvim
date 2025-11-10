@@ -75,10 +75,10 @@ M.json_to_md = function(json_str)
       end
     end
 
-    -- Add tool_call_id for tool role messages (## tool: name (id=...) ````json...)
+    -- Add tool_call_id for tool role messages (## tool: name (id=...) ```json...)
     if msg.role == "tool" and msg.tool_call_id then
       table.insert(msg_parts, "\n## tool: " .. (msg.name or "response") .. " (id=" .. msg.tool_call_id .. ")\n\n")
-      table.insert(msg_parts, "````json\n" .. msg.content .. "\n````\n")
+      table.insert(msg_parts, "```json\n" .. msg.content .. "\n```\n")
     elseif msg.content then
       -- Add content for regular messages
       table.insert(msg_parts, "\n" .. msg.content .. "\n")
@@ -152,9 +152,10 @@ M.md_to_json = function(md_str)
     ---@type ChatMLMessage
     local msg = { role = role }
 
-    -- Process file includes: @path pattern
-    -- Pattern: (\n?-?\s*@([^\n]+)) - finds optional newline, dash, and @path
-    for file_path in content_trim:gmatch("\n?%-?%s*@([^\n]+)") do
+    -- Process file includes: @path pattern (@ at start of line)
+    -- Pattern: (\n\s*@([^\n]+)) - finds lines starting with @ and captures the path
+    local search_content = "\n" .. content_trim
+    for file_path in search_content:gmatch("\n%s*@([^\n]+)") do
       file_path = file_path:gsub("^%s+", ""):gsub("%s+$", "")
 
       local file = io.open(file_path, "r")
@@ -175,54 +176,55 @@ M.md_to_json = function(md_str)
       end
 
       if file_content then
-        content_trim = string.format("%s\n\n````%s\n%s\n````", content_trim, file_path, file_content)
+        content_trim = string.format("%s\n\n```%s\n%s\n```", content_trim, file_path, file_content)
       end
     end
 
-    -- Handle tool role messages: extract tool_call_id from ## tool: name (id=...) format
-    if role == "tool" then
-      -- Pattern: ## tool: func (id=...) ````json\n(content)\n````
-      -- Extracts tool name, call ID, and JSON response content
-      local _, tool_call_id, tool_content =
-        content_trim:match("## tool:%s*(%S+)%s*%(%s*id%s*=%s*([^%)]+)%)%s*````json\n(.-)\n````")
+    -- Parse tool_call_id: extract tool_call_id from ## tool: name (id=...) format (any role)
+    -- Pattern: ## tool: func (id=...) ```json\n(content)\n```
+    -- Extracts tool name, call ID, and JSON response content
+    local _, tool_call_id, tool_content =
+      content_trim:match("## tool:%s*(%S+)%s*%(%s*id%s*=%s*([^%)]+)%)%s*```json\n(.-)\n```")
+    if tool_call_id then
       msg.tool_call_id = tool_call_id
       msg.content = tool_content or ""
-      table.insert(messages, msg)
-    else
-      -- Parse tool_calls blocks: ## tool_call: func (id=...) ```json...```
-      local tool_calls = {}
-      -- Pattern: ## tool_call: func (id=...) ```json\n(args)```
-      -- Captures function name, call ID, and JSON arguments
-      local pattern_tool = "## tool_call:%s*(%S+)%s*%(%s*id%s*=%s*([^%)]+)%)%s*```json\n(.-)```"
-      local found_any = false
-      for func, id, args in content_trim:gmatch(pattern_tool) do
-        found_any = true
-        table.insert(tool_calls, {
-          id = id,
-          type = "function",
-          ["function"] = {
-            name = func,
-            arguments = args,
-          },
-        })
-      end
-
-      if found_any then
-        msg.tool_calls = tool_calls
-        -- Remove all matched tool_call blocks from content
-        -- Pattern: \n?## tool_call: func (id=...) ```json\n...\n``` with optional trailing space
-        content_trim = content_trim:gsub("\n?## tool_call:%s*%S+%s*%(%s*id%s*=%s*[^%)]+%)%s*```json\n.-```%s*", "")
-        -- Trim leading/trailing whitespace after removal
-        content_trim = content_trim:gsub("^%s+", ""):gsub("%s+$", "")
-      end
-
-      -- For non-tool messages, use the trimmed content as-is
-      if #content_trim > 0 then
-        msg.content = content_trim
-      end
-
-      table.insert(messages, msg)
+      -- Remove the tool block from content
+      content_trim = content_trim:gsub("## tool:%s*%S+%s*%(%s*id%s*=%s*[^%)]+%)%s*```json\n.-\n```%s*", "")
+      content_trim = content_trim:gsub("^%s+", ""):gsub("%s+$", "")
     end
+
+    -- Parse tool_calls blocks: ## tool_call: func (id=...) ```json...``` (any role)
+    local tool_calls = {}
+    -- Pattern: ## tool_call: func (id=...) ```json\n(args)```
+    -- Captures function name, call ID, and JSON arguments
+    local pattern_tool = "## tool_call:%s*(%S+)%s*%(%s*id%s*=%s*([^%)]+)%)%s*```json\n(.-)```"
+    for func, id, args in content_trim:gmatch(pattern_tool) do
+      table.insert(tool_calls, {
+        id = id,
+        type = "function",
+        ["function"] = {
+          name = func,
+          arguments = args,
+        },
+      })
+    end
+
+    if #tool_calls > 0 then
+      msg.tool_calls = tool_calls
+      -- Remove all matched tool_call blocks from content
+      -- Pattern: \n?## tool_call: func (id=...) ```json\n...\n``` with optional trailing space
+      content_trim = content_trim:gsub("\n?## tool_call:%s*%S+%s*%(%s*id%s*=%s*[^%)]+%)%s*```json\n.-```%s*", "")
+      -- Trim leading/trailing whitespace after removal
+      content_trim = content_trim:gsub("^%s+", ""):gsub("%s+$", "")
+    end
+
+    -- For any message, use the trimmed content as-is if present
+    if #content_trim > 0 then
+      vim.print(content_trim)
+      msg.content = content_trim
+    end
+
+    table.insert(messages, msg)
 
     pos = next_msg_pos or #content + 1
   end
