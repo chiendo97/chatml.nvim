@@ -2,11 +2,11 @@ local parse = require("chatml.parse")
 local ai = require("ai")
 local progress_manager = require("chatml.progress_manager")
 
----@types integer?
-local last_job_id = nil
-
 ---@class ChatMLLLM
 local M = {}
+
+---@types integer?
+M.last_job_id = nil
 
 ---@class AiClient
 M.client = ai.Client:new()
@@ -23,9 +23,6 @@ local function get_hub_instance()
     return nil
   end
   local hub = mcphub.get_hub_instance()
-  if not hub then
-    error("No hub instance found. Please ensure mcphub is properly initialized.")
-  end
   return hub
 end
 
@@ -56,33 +53,27 @@ local function parse_function_arguments(args_str)
   return decoded_args
 end
 
----Clean examples from function parameters
----@param func_def table Function definition with parameters
----@return table func_def Cleaned function definition
-local function clean_function_examples(func_def)
-  if not (func_def.parameters and func_def.parameters.properties) then
-    return func_def
-  end
-
-  for _, param in pairs(func_def.parameters.properties) do
-    param.examples = nil
-  end
-  return func_def
-end
-
 ---Transform tool to function definition
 ---@param tool EnhancedMCPTool Tool definition from hub
 ---@return table func_def Function definition for LLM
 local function tool_to_function_def(tool)
   local func_def = {
-    ["function"] = clean_function_examples({
-      name = string.format("%s-%s", tool.server_name, tool.name),
-      description = tool.description,
-      parameters = tool.inputSchema,
-    }),
+    name = string.format("%s-%s", tool.server_name, tool.name),
+    description = tool.description,
+    parameters = tool.inputSchema,
+  }
+
+  -- Clean examples from parameters
+  if func_def.parameters and func_def.parameters.properties then
+    for _, param in pairs(func_def.parameters.properties) do
+      param.examples = nil
+    end
+  end
+
+  return {
+    ["function"] = func_def,
     type = "function",
   }
-  return func_def
 end
 
 ---Add tools to chat completion request
@@ -99,13 +90,6 @@ local function add_tools_to_request(request, tools)
   request.parallel_tool_calls = false
 
   return request
-end
-
----Check if message has tool calls
----@param message ChatMLMessage Chat message
----@return boolean has_tool_calls Whether message has tool calls
-local function has_tool_calls(message)
-  return message ~= nil and (message.tool_calls ~= nil and #message.tool_calls > 0)
 end
 
 ---Extract function call info from message
@@ -129,44 +113,6 @@ end
 ---@return string[] lines The formatted role header lines
 local function format_role_header(role)
   return { "", "# " .. role, "", "" }
-end
-
----Format tool call lines
----@param func_name string Function name
----@param tool_call_id string Tool call identifier
----@return string[] lines The formatted tool call lines
-local function format_tool_call_lines(func_name, tool_call_id)
-  return {
-    "## tool_call: " .. func_name .. " (id=" .. tool_call_id .. ")",
-    "",
-  }
-end
-
----Format tool response header
----@param tool_name string Tool name
----@param tool_call_id string Tool call identifier
----@return string[] lines The formatted tool response header
-local function format_tool_response_header(tool_name, tool_call_id)
-  return {
-    "## tool: " .. tool_name .. " (id=" .. tool_call_id .. ")",
-    "",
-  }
-end
-
----Format tool call result as content
----@param response MCPResponseOutput Tool call response
----@param err? string Error message if tool call failed
----@return string content Formatted content string
-local function format_tool_result(response, err)
-  if err then
-    return vim.json.encode({ error = "Tool call error: " .. err })
-  end
-
-  if not (response and response.text) then
-    return "{}"
-  end
-
-  return string.format("```json\n%s\n```", response.text)
 end
 
 -- ============================================================================
@@ -262,7 +208,7 @@ local function get_available_tools()
     return {}
   end
 
-  return hub:get_tools()
+  return hub:get_tools() or {}
 end
 
 ---Prepare chat completion request from markdown buffer
@@ -279,41 +225,11 @@ end
 -- TOOL EXECUTION
 -- ============================================================================
 
----Handle tool execution error
----@param progress_id string Progress identifier
----@param err string Error message
----@return nil
-local function handle_tool_error(progress_id, err)
-  progress_manager:finish_handle(progress_id, "Tool call failed")
-  vim.notify("Tool call error: " .. err, vim.log.levels.ERROR)
-end
-
----Handle successful tool execution
----@param progress_id string Progress identifier
----@param out_buf integer Output buffer
----@param server_name string Server name
----@param func_name string Function name
----@param response MCPResponseOutput Tool response
----@param tool_call_id string Tool call identifier
----@return nil
-local function handle_tool_success(progress_id, out_buf, server_name, func_name, response, tool_call_id)
-  progress_manager:update_handle(progress_id, "Processing tool response...", 80)
-
-  local result_content = format_tool_result(response, nil)
-  local tool_response_header = format_tool_response_header(string.format("%s-%s", server_name, func_name), tool_call_id)
-  local content_lines = split_content_to_lines(result_content)
-
-  append_lines_to_buffer(out_buf, { "", "# tool", "" })
-  append_lines_to_buffer(out_buf, tool_response_header)
-  append_lines_to_buffer(out_buf, content_lines)
-  progress_manager:finish_handle(progress_id, "Tool call completed successfully")
-end
-
 ---Create tool result callback
 ---@param out_buf integer Output buffer
 ---@param server_name string Server name
 ---@param func_name string Function name
----@param tool_call_id string? Tool call identifier
+---@param tool_call_id string Tool call identifier
 ---@return fun(res: MCPResponseOutput? ,err: string?): nil callback Tool result callback
 local function create_tool_result_callback(out_buf, server_name, func_name, tool_call_id)
   local progress_id = string.format("tool_%s_%s_%d", server_name, func_name, out_buf)
@@ -326,10 +242,26 @@ local function create_tool_result_callback(out_buf, server_name, func_name, tool
 
   return function(response, err)
     if err then
-      handle_tool_error(progress_id, err)
-      return
+      vim.notify("Tool call error: " .. err, vim.log.levels.ERROR)
+    else
+      -- Format tool result content
+      local result_content = (response and response.text) and string.format("```json\n%s\n```", response.text) or "{}"
+
+      -- Build tool response header and content lines
+      local tool_name = string.format("%s-%s", server_name, func_name)
+
+      local tool_response_header = {
+        "## tool: " .. tool_name .. " (id=" .. tool_call_id .. ")",
+        "",
+      }
+
+      local content_lines = split_content_to_lines(result_content)
+
+      append_lines_to_buffer(out_buf, { "", "# tool", "" })
+      append_lines_to_buffer(out_buf, tool_response_header)
+      append_lines_to_buffer(out_buf, content_lines)
     end
-    handle_tool_success(progress_id, out_buf, server_name, func_name, response, tool_call_id)
+    progress_manager:finish_handle(progress_id, "Tool call finished")
   end
 end
 
@@ -338,13 +270,13 @@ end
 ---@param func_name string Function name
 ---@param func_args table Function arguments
 ---@param out_buf integer Output buffer
----@param tool_call_id string? Tool call identifier
+---@param tool_call_id string Tool call identifier
 ---@return nil
 local function async_call_tool_and_append(server_name, func_name, func_args, out_buf, tool_call_id)
   local callback = create_tool_result_callback(out_buf, server_name, func_name, tool_call_id)
   local hub = get_hub_instance()
   if not hub then
-    vim.notify("No hub instance found for tool call", vim.log.levels.ERROR)
+    vim.notify_once("No hub instance found for tool call", vim.log.levels.ERROR)
     return
   end
 
@@ -360,11 +292,11 @@ end
 ---@return boolean tool_called Whether a tool was called
 local function handle_last_function_call(request, buf)
   local last_msg = request.messages[#request.messages]
-  if not has_tool_calls(last_msg) then
+  if not (last_msg and last_msg.tool_calls and #last_msg.tool_calls > 0) then
     return false
   end
 
-  for _, tool_call in ipairs(last_msg.tool_calls or {}) do
+  for _, tool_call in ipairs(last_msg.tool_calls) do
     local function_call = tool_call["function"]
     local tool_call_id = tool_call.id or ""
     if function_call and function_call.name and function_call.arguments then
@@ -424,34 +356,20 @@ end
 -- CALLBACK CREATORS
 -- ============================================================================
 
----Try to parse JSON from buffer
----@param buffer string JSON buffer
----@return boolean success Whether parsing succeeded
----@return table? obj Parsed object
-local function try_parse_json(buffer)
-  local ok, obj = pcall(vim.json.decode, buffer, { luanil = { object = true, array = true } })
-  return ok, obj
-end
-
 ---Process streaming data chunk
 ---@param raw_str string Raw data string
 ---@param buffer string Current buffer
 ---@param callback fun(obj: table):nil Callback to invoke with parsed object
 ---@return string new_buffer Updated buffer
 local function process_streaming_chunk(raw_str, buffer, callback)
-  if not raw_str or raw_str == "" then
-    return buffer
-  end
-
-  -- ignore if `OPENROUTER PROCESSING` in raw_str
-  if raw_str:find("OPENROUTER PROCESSING") then
+  if not raw_str or raw_str == "" or raw_str:find("OPENROUTER PROCESSING") then
     return buffer
   end
 
   buffer = buffer .. raw_str
   local str = buffer:match("^data: (.+)") or buffer
 
-  local ok, obj = try_parse_json(str)
+  local ok, obj = pcall(vim.json.decode, str, { luanil = { object = true, array = true } })
   if ok and obj then
     callback(obj)
     return ""
@@ -472,7 +390,7 @@ local function process_non_streaming_data(data, buffer, callback)
   end
 
   buffer = buffer .. raw_str
-  local ok, obj = try_parse_json(buffer)
+  local ok, obj = pcall(vim.json.decode, buffer, { luanil = { object = true, array = true } })
   if ok and obj then
     callback(obj)
     return ""
@@ -545,13 +463,11 @@ end
 ---@param out_buf integer Output buffer
 ---@return nil
 local function process_message_content(message, out_buf)
-  if not (message.content and message.content ~= "") then
-    return
+  if message.content and message.content ~= "" then
+    local content_lines = split_content_to_lines(message.content)
+    append_lines_to_buffer(out_buf, content_lines)
+    append_lines_to_buffer(out_buf, { "" })
   end
-
-  local content_lines = split_content_to_lines(message.content)
-  append_lines_to_buffer(out_buf, content_lines)
-  append_lines_to_buffer(out_buf, { "" })
 end
 
 ---Create callback for non-streaming chat completion
@@ -581,10 +497,8 @@ local function create_chat_completion_callback(out_buf)
     assert(message, "Chat completion response has no message")
 
     local role = message.role
-
     if role and role ~= "" and last_role ~= role then
-      local role_lines = format_role_header(role)
-      append_lines_to_buffer(out_buf, role_lines)
+      append_lines_to_buffer(out_buf, format_role_header(role))
       last_role = role
     end
 
@@ -623,9 +537,7 @@ local function handle_stream_completion(progress_id, state, out_buf, chunk_count
       "",
     }
     append_lines_to_buffer(out_buf, func_lines)
-  end
-
-  if not state.tool_call_id then
+  else
     append_lines_to_buffer(out_buf, { "", "# user", "" })
   end
 
@@ -652,16 +564,13 @@ end
 ---@param content_length integer Current content length
 ---@return integer new_content_length Updated content length
 local function process_stream_delta_content(delta, out_buf, content_length)
-  if not delta.content then
-    return content_length
+  if delta.content then
+    local lines = split_content_to_lines(delta.content)
+    local last_line, last_column = get_buffer_last_position(out_buf)
+    insert_text_at_position(out_buf, last_line, last_column, lines)
+    return content_length + #delta.content
   end
-
-  local new_length = content_length + #delta.content
-  local lines = split_content_to_lines(delta.content)
-  local last_line, last_column = get_buffer_last_position(out_buf)
-  insert_text_at_position(out_buf, last_line, last_column, lines)
-
-  return new_length
+  return content_length
 end
 
 ---Create callback for streaming chat completion
@@ -701,8 +610,7 @@ local function create_streaming_callback(out_buf)
     local role = delta.role
     if role and role ~= "" and state.last_role ~= role then
       progress_manager:update_handle(progress_id, string.format("Processing %s response...", role), nil)
-      local role_lines = format_role_header(role)
-      append_lines_to_buffer(out_buf, role_lines)
+      append_lines_to_buffer(out_buf, format_role_header(role))
       state.last_role = role
     end
 
@@ -750,16 +658,17 @@ end
 ---@param out_buf integer? Output buffer
 ---@return integer out_buf_validated Validated output buffer
 local function validate_buffers(in_buf, out_buf)
-  if not validate_buffer_filetype(in_buf, "markdown") then
-    vim.notify("Input buffer is not a markdown buffer")
-    error("Input buffer is not a markdown buffer")
+  local function check_buffer(buf, name)
+    if not validate_buffer_filetype(buf, "markdown") then
+      local msg = name .. " buffer is not a markdown buffer"
+      vim.notify(msg, vim.log.levels.ERROR)
+      error(msg)
+    end
   end
 
+  check_buffer(in_buf, "Input")
   local actual_out_buf = out_buf or in_buf
-  if not validate_buffer_filetype(actual_out_buf, "markdown") then
-    vim.notify("Output buffer is not a markdown buffer")
-    error("Output buffer is not a markdown buffer")
-  end
+  check_buffer(actual_out_buf, "Output")
 
   return actual_out_buf
 end
@@ -779,12 +688,9 @@ M.chat_completion = function(in_buf, out_buf)
   -- Early validation and setup
   out_buf = validate_buffers(in_buf, out_buf)
 
-  progress_manager:update_handle(main_progress_id, "Parsing request...", 25)
   local request = prepare_chat_request(in_buf)
 
-  progress_manager:update_handle(main_progress_id, "Checking for tool calls...", 50)
   local is_tool_used = handle_last_function_call(request, out_buf)
-
   if is_tool_used then
     progress_manager:finish_handle(main_progress_id, "Tool call initiated")
     vim.notify("Tool was called, skipping LLM request")
@@ -805,8 +711,6 @@ M.chat_completion = function(in_buf, out_buf)
       .. " characters"
   )
 
-  progress_manager:finish_handle(main_progress_id, "Request sent to LLM")
-
   local on_exit = function(_, code, _)
     if code ~= 0 then
       vim.notify("LLM request failed with exit code: " .. code, vim.log.levels.ERROR)
@@ -816,15 +720,15 @@ M.chat_completion = function(in_buf, out_buf)
     progress_manager:clear()
   end
 
-  last_job_id =
+  M.last_job_id =
     M.client:chat_completion_create(request, completion_callback, streaming_callback, on_stdout_callback, nil, on_exit)
 end
 
 M.cancel_last_job = function()
-  if last_job_id then
-    local status = vim.fn.jobstop(last_job_id)
+  if M.last_job_id then
+    local status = vim.fn.jobstop(M.last_job_id)
 
-    last_job_id = nil
+    M.last_job_id = nil
     vim.notify("Last job cancelled with status: " .. status, vim.log.levels.INFO)
   else
     vim.notify("No job to cancel", vim.log.levels.WARN)
