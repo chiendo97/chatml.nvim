@@ -166,7 +166,7 @@ local function format_tool_result(response, err)
     return "{}"
   end
 
-  return string.format("````json\n%s\n````", response.text)
+  return string.format("```json\n%s\n```", response.text)
 end
 
 -- ============================================================================
