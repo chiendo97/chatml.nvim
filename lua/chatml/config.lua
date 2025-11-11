@@ -5,7 +5,7 @@ local M = {}
 
 ---@class ChatMLDefaultOptions
 M.defaults = {
-  base_url = "https://api.openai.com/v1",
+  base_url = vim.fn.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1",
   api_key = vim.fn.getenv("OPENAI_API_KEY"),
 }
 
