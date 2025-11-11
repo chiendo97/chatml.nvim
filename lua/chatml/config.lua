@@ -5,8 +5,8 @@ local M = {}
 
 ---@class ChatMLDefaultOptions
 M.defaults = {
-  base_url = vim.fn.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1",
-  api_key = vim.fn.getenv("OPENAI_API_KEY"),
+  base_url = os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1",
+  api_key = os.getenv("OPENAI_API_KEY") or "",
 }
 
 ---@class ChatMLOptions
@@ -15,8 +15,11 @@ M.options = {}
 ---Extend the defaults options table with the user options
 ---@param opts ChatMLOptions: plugin options
 M.setup = function(opts)
+  -- Merge user-provided options 'opts' with default options 'M.defaults'.
+  -- 'vim.tbl_deep_extend' recursively merges tables, with 'force' prioritizing latter values.
+  -- Resulting merged options are stored in 'M.options'.
   M.options = vim.tbl_deep_extend("force", {}, M.defaults, opts or {})
-  vim.notify_once("ChatML configured with base_url: " .. M.options.base_url, vim.log.levels.INFO)
+  vim.notify_once("ChatML configured with base_url: " .. (M.options.base_url or ""), vim.log.levels.INFO)
 end
 
 return M
