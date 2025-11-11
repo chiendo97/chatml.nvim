@@ -1,5 +1,5 @@
 local parse = require("chatml.parse")
-local ai = require("ai")
+local client_module = require("chatml.client")
 local progress_manager = require("chatml.progress_manager")
 
 ---@class ChatMLLLM
@@ -7,9 +7,6 @@ local M = {}
 
 ---@types integer?
 M.last_job_id = nil
-
----@class AiClient
-M.client = ai.Client:new()
 
 -- ============================================================================
 -- PURE UTILITY FUNCTIONS
@@ -720,8 +717,9 @@ M.chat_completion = function(in_buf, out_buf)
     progress_manager:clear()
   end
 
+  local client = client_module.Client:new()
   M.last_job_id =
-    M.client:chat_completion_create(request, completion_callback, streaming_callback, on_stdout_callback, nil, on_exit)
+    client:chat_completion_create(request, completion_callback, streaming_callback, on_stdout_callback, nil, on_exit)
 end
 
 M.cancel_last_job = function()

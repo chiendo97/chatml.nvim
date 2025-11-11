@@ -24,12 +24,20 @@ end
 local function check_dependencies()
   local ok
 
-  --- Check for ai.nvim
-  ok, _ = pcall(require, "ai")
+  --- Check for internal client module
+  ok, _ = pcall(require, "chatml.client")
   if not ok then
-    vim.health.error("ai.nvim is not installed")
+    vim.health.error("chatml.client module not found")
   else
-    vim.health.ok("ai.nvim is installed")
+    vim.health.ok("chatml.client module loaded")
+  end
+
+  --- Check for curl
+  local curl_available = vim.fn.executable("curl") == 1
+  if not curl_available then
+    vim.health.error("curl is not installed. This is required for API requests.")
+  else
+    vim.health.ok("curl is installed")
   end
 
   --- Check for TreeSitter

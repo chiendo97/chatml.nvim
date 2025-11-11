@@ -2,7 +2,7 @@
 --- This is a simple "definition file" (https://luals.github.io/wiki/definition-files/),
 --- the @meta tag at the top is its hallmark.
 
--- NOTE: ChatML prefix is used to types from chatml.nvim types
+-- NOTE: ChatML prefix is used for types from chatml.nvim types
 
 -- NOTE: These files are not annotated with types. The code is from external sources.
 --  lua/chatml/yaml.lua
@@ -13,15 +13,26 @@
 ---@class ChatML
 ---@field setup fun(opts?: ChatMLOptions): nil
 
+-- lua/chatml/client.lua --------------------------------------------------------
+
+---@class ChatMLClient
+---@field base_url string The base URL for all API requests
+---@field api_key string The API key used for authentication
+
 -- lua/chatml/config.lua ---------------------------------------------------------
 
+---@class ChatMLDefaultOptions
+---@field api_key string: environment variable used for API authentication
+---@field base_url string: base url for all API requests (default: https://api.openai.com/v1)
+
 ---@class ChatMLConfig
----@field defaults ChatMLOptions default options
+---@field defaults ChatMLDefaultOptions default options
 ---@field options ChatMLOptions user options
 ---@field setup fun(opts?: ChatMLOptions): nil
 
 ---@class ChatMLOptions
--- TODO: Define specific options if any
+---@field api_key? string environment variable used for API authentication
+---@field base_url? string base url for all API requests
 
 -- lua/chatml/health.lua ---------------------------------------------------------
 
@@ -95,7 +106,6 @@
 ---@field tool_call_id? string
 
 ---@class ChatMLLLM
----@field client AiClient llm client used to set request to provider
 ---@field chat_completion fun(in_buf: integer, out_buf?: integer): nil
 ---@field on_chat_completion fun(out_buf: integer): fun(chat_completion_obj: ChatCompletionResponse):nil -- Kept for potential direct use, though create_chat_completion_callback is internal
 ---@field on_chat_completion_chunk fun(out_buf: integer): fun(chat_completion_chunk_obj: ChatCompletionResponse):nil -- Kept for potential direct use, though create_streaming_callback is internal

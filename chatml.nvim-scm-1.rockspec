@@ -13,9 +13,7 @@ description = {
 	license = "MIT",
 }
 
-dependencies = {
-	"ai.nvim >= 1.4.2-1",
-}
+dependencies = {}
 
 test_dependencies = {
 	"nlua",
