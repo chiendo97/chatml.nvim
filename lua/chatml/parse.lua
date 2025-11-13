@@ -158,6 +158,10 @@ M.md_to_json = function(md_str)
     for file_path in search_content:gmatch("\n%s*@([^\n]+)") do
       file_path = file_path:gsub("^%s+", ""):gsub("%s+$", "")
 
+      if vim.fn.filereadable(file_path) == 0 then
+        goto continue
+      end
+
       local file = io.open(file_path, "r")
       local file_content
       if not file then
@@ -178,6 +182,8 @@ M.md_to_json = function(md_str)
       if file_content then
         content_trim = string.format("%s\n\n```%s\n%s\n```", content_trim, file_path, file_content)
       end
+
+      ::continue::
     end
 
     -- Parse tool_call_id: extract tool_call_id from ## tool: name (id=...) format (any role)
