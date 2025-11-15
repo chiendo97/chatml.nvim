@@ -75,10 +75,10 @@ M.json_to_md = function(json_str)
       end
     end
 
-    -- Add tool_call_id for tool role messages (## tool: name (id=...) ```json...)
+    -- Add tool_call_id for tool role messages (## tool: name (id=...) ````json...)
     if msg.role == "tool" and msg.tool_call_id then
       table.insert(msg_parts, "\n## tool: " .. (msg.name or "response") .. " (id=" .. msg.tool_call_id .. ")\n\n")
-      table.insert(msg_parts, "```json\n" .. msg.content .. "\n```\n")
+      table.insert(msg_parts, "````json\n" .. msg.content .. "\n````\n")
     elseif msg.content then
       -- Add content for regular messages
       table.insert(msg_parts, "\n" .. msg.content .. "\n")
@@ -95,9 +95,47 @@ end
 ---@param md_str string Markdown string of chat completion request
 ---@return string json JSON string of chat completion request
 M.md_to_json = function(md_str)
-  -- Parse YAML front matter: Extract metadata between ---\n...\n---
-  -- Pattern: ^---\n(.*)\n---(.*)$ - captures front matter and remaining content
-  local front_matter, content = md_str:match("^%-%-%-\n(.-)\n%-%-%-(.*)$")
+  -- =====================================================
+  -- REGEX PATTERN DEFINITIONS - for better readability
+  -- =====================================================
+
+  -- Front matter pattern: Extract YAML metadata between --- markers
+  -- Matches: ---\n(yaml content)\n--- (rest of content)
+  local PATTERN_FRONT_MATTER = "^%-%-%-\n(.-)\n%-%-%-(.*)$"
+
+  -- Message role header pattern: Matches "# role\n\n"
+  -- Captures: role name (must be alphanumeric)
+  local PATTERN_ROLE_HEADER = "# (%w+)\n\n"
+
+  -- Next message marker: Looks for start of next section "\n# "
+  local PATTERN_NEXT_MESSAGE = "\n# "
+
+  -- File include pattern: Matches "@filepath" at start of line
+  -- Captures: filepath (everything until newline)
+  local PATTERN_FILE_INCLUDE = "\n%s*@([^\n]+)"
+
+  -- Tool response pattern: Matches "## tool: name (id=...) ````json\n...\n````"
+  -- Captures: (1) tool_name, (2) call_id, (3) json_content
+  local PATTERN_TOOL_ID = "## tool:%s*(%S+)%s*%(%s*id%s*=%s*([^%)]+)%)%s*````json\n(.-)\n````"
+
+  -- Tool call pattern: Matches "## tool_call: func (id=...) ````json\n...\n````"
+  -- Captures: (1) function_name, (2) call_id, (3) json_arguments
+  local PATTERN_TOOL_CALL = "## tool_call:%s*(%S+)%s*%(%s*id%s*=%s*([^%)]+)%)%s*```json\n(.-)```"
+
+  -- Cleanup patterns for removing tool/tool_call blocks
+  -- Matches entire block including optional leading newline and trailing spaces
+  local PATTERN_REMOVE_TOOL_BLOCK = "## tool:%s*%S+%s*%(%s*id%s*=%s*[^%)]+%)%s*````json\n.-\n````%s*"
+  local PATTERN_REMOVE_TOOL_CALL_BLOCK = "\n?## tool_call:%s*%S+%s*%(%s*id%s*=%s*[^%)]+%)%s*```json\n.-```%s*"
+
+  -- Trim patterns
+  local PATTERN_TRIM_START = "^%s+"
+  local PATTERN_TRIM_END = "%s+$"
+
+  -- =====================================================
+  -- FRONT MATTER PARSING
+  -- =====================================================
+
+  local front_matter, content = md_str:match(PATTERN_FRONT_MATTER)
   if not front_matter or #front_matter == 0 then
     error("Cannot parse front matter string")
   end
@@ -130,7 +168,7 @@ M.md_to_json = function(md_str)
   local pos = 1
 
   while pos <= #content do
-    local start, end_pos, role = content:find("# (%w+)\n\n", pos)
+    local start, end_pos, role = content:find(PATTERN_ROLE_HEADER, pos)
     if not start then
       break
     end
@@ -140,23 +178,22 @@ M.md_to_json = function(md_str)
     end
 
     -- Find the start of the next message (or end of content)
-    local next_msg_pos = content:find("\n# ", end_pos + 1)
+    local next_msg_pos = content:find(PATTERN_NEXT_MESSAGE, end_pos + 1)
     local msg_end_pos = next_msg_pos or #content + 1
 
     -- Extract content between current header and next message
     -- Extracts the substring from `content` starting right after `end_pos` up to just before `msg_end_pos`,
     -- then trims any leading and trailing whitespace from this substring.
-    local content_trim = content:sub(end_pos + 1, msg_end_pos - 1):gsub("^%s+", ""):gsub("%s+$", "")
+    local content_trim = content:sub(end_pos + 1, msg_end_pos - 1):gsub(PATTERN_TRIM_START, ""):gsub(PATTERN_TRIM_END, "")
 
     -- Parse a single message from markdown content
     ---@type ChatMLMessage
     local msg = { role = role }
 
     -- Process file includes: @path pattern (@ at start of line)
-    -- Pattern: (\n\s*@([^\n]+)) - finds lines starting with @ and captures the path
     local search_content = "\n" .. content_trim
-    for file_path in search_content:gmatch("\n%s*@([^\n]+)") do
-      file_path = file_path:gsub("^%s+", ""):gsub("%s+$", "")
+    for file_path in search_content:gmatch(PATTERN_FILE_INCLUDE) do
+      file_path = file_path:gsub(PATTERN_TRIM_START, ""):gsub(PATTERN_TRIM_END, "")
 
       if vim.fn.filereadable(file_path) == 0 then
         goto continue
@@ -187,24 +224,18 @@ M.md_to_json = function(md_str)
     end
 
     -- Parse tool_call_id: extract tool_call_id from ## tool: name (id=...) format (any role)
-    -- Pattern: ## tool: func (id=...) ```json\n(content)\n```
-    -- Extracts tool name, call ID, and JSON response content
-    local _, tool_call_id, tool_content =
-      content_trim:match("## tool:%s*(%S+)%s*%(%s*id%s*=%s*([^%)]+)%)%s*```json\n(.-)\n```")
+    local _, tool_call_id, tool_content = content_trim:match(PATTERN_TOOL_ID)
     if tool_call_id then
       msg.tool_call_id = tool_call_id
       msg.content = tool_content or ""
       -- Remove the tool block from content
-      content_trim = content_trim:gsub("## tool:%s*%S+%s*%(%s*id%s*=%s*[^%)]+%)%s*```json\n.-\n```%s*", "")
-      content_trim = content_trim:gsub("^%s+", ""):gsub("%s+$", "")
+      content_trim = content_trim:gsub(PATTERN_REMOVE_TOOL_BLOCK, "")
+      content_trim = content_trim:gsub(PATTERN_TRIM_START, ""):gsub(PATTERN_TRIM_END, "")
     end
 
     -- Parse tool_calls blocks: ## tool_call: func (id=...) ```json...``` (any role)
     local tool_calls = {}
-    -- Pattern: ## tool_call: func (id=...) ```json\n(args)```
-    -- Captures function name, call ID, and JSON arguments
-    local pattern_tool = "## tool_call:%s*(%S+)%s*%(%s*id%s*=%s*([^%)]+)%)%s*```json\n(.-)```"
-    for func, id, args in content_trim:gmatch(pattern_tool) do
+    for func, id, args in content_trim:gmatch(PATTERN_TOOL_CALL) do
       table.insert(tool_calls, {
         id = id,
         type = "function",
@@ -218,10 +249,9 @@ M.md_to_json = function(md_str)
     if #tool_calls > 0 then
       msg.tool_calls = tool_calls
       -- Remove all matched tool_call blocks from content
-      -- Pattern: \n?## tool_call: func (id=...) ```json\n...\n``` with optional trailing space
-      content_trim = content_trim:gsub("\n?## tool_call:%s*%S+%s*%(%s*id%s*=%s*[^%)]+%)%s*```json\n.-```%s*", "")
+      content_trim = content_trim:gsub(PATTERN_REMOVE_TOOL_CALL_BLOCK, "")
       -- Trim leading/trailing whitespace after removal
-      content_trim = content_trim:gsub("^%s+", ""):gsub("%s+$", "")
+      content_trim = content_trim:gsub(PATTERN_TRIM_START, ""):gsub(PATTERN_TRIM_END, "")
     end
 
     -- For any message, use the trimmed content as-is if present

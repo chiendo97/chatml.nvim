@@ -242,7 +242,7 @@ local function create_tool_result_callback(out_buf, server_name, func_name, tool
       vim.notify("Tool call error: " .. err, vim.log.levels.ERROR)
     else
       -- Format tool result content
-      local result_content = (response and response.text) and string.format("```json\n%s\n```", response.text) or "{}"
+      local result_content = (response and response.text) and string.format("````json\n%s\n````", response.text) or "{}"
 
       -- Build tool response header and content lines
       local tool_name = string.format("%s-%s", server_name, func_name)
@@ -286,7 +286,7 @@ end
 ---Handle tool calls in last assistant message
 ---@param request ChatMLRequest The chat completion request
 ---@param buf integer Buffer number to append tool result
----@return boolean tool_called Whether a tool was called
+---@return boolean tool_called Whether a tool was used
 local function handle_last_function_call(request, buf)
   local last_msg = request.messages[#request.messages]
   if not (last_msg and last_msg.tool_calls and #last_msg.tool_calls > 0) then
@@ -690,7 +690,7 @@ M.chat_completion = function(in_buf, out_buf)
   local is_tool_used = handle_last_function_call(request, out_buf)
   if is_tool_used then
     progress_manager:finish_handle(main_progress_id, "Tool call initiated")
-    vim.notify("Tool was called, skipping LLM request")
+    vim.notify("Tool was used, skipping LLM request")
     return
   end
 
