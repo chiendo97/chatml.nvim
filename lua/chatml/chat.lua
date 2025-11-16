@@ -103,6 +103,7 @@ M.new_chat = function()
     "---",
     "model: openai/gpt-5-mini",
     "stream: true",
+    "reasoning_effort: minimal",
     "---",
     "",
     "# system",

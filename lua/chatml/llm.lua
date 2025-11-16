@@ -711,8 +711,6 @@ M.chat_completion = function(in_buf, out_buf)
   local on_exit = function(_, code, _)
     if code ~= 0 then
       vim.notify("LLM request failed with exit code: " .. code, vim.log.levels.ERROR)
-    else
-      vim.notify("LLM request completed successfully", vim.log.levels.INFO)
     end
     progress_manager:clear()
   end
