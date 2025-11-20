@@ -400,11 +400,11 @@ end
 ---@param stream boolean Whether the request is streaming or not.
 ---@param on_chat_completion (fun(obj: ChatCompletionResponse):nil)? Callback for full completion response when stream == false or upon error.
 ---@param on_chat_completion_chunk (fun(obj: ChatCompletionResponse):nil)? Callback for chunk completion when stream == true.
----@return fun(_, data: string[], event: string?):nil on_stdout_callback Callback function for job stdout.
+---@return fun(data: string[]):nil on_stdout_callback Callback function for job stdout.
 local function create_on_stdout(stream, on_chat_completion, on_chat_completion_chunk)
   local buffer = ""
 
-  return function(_, data, _)
+  return function(data)
     if stream then
       assert(on_chat_completion_chunk, "on_chat_completion_chunk callback must be provided for streaming requests")
       for _, raw_str in ipairs(data) do

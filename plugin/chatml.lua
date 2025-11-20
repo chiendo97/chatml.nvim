@@ -24,5 +24,14 @@ vim.api.nvim_create_autocmd("BufEnter", {
       silent = true,
       desc = "Stop LLM generation",
     })
+
+    -- Create keymap for switching models
+    vim.keymap.set("n", "<leader>lm", function()
+      chat.switch_model()
+    end, {
+      buffer = buf,
+      silent = true,
+      desc = "Switch model",
+    })
   end,
 })

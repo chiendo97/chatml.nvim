@@ -3,10 +3,12 @@
 
 local M = {}
 
----Create curl command to send request to the server
+---Create curl command array to send request to the server
 ---@param url string url for the request
 ---@param api_key string environment variable used for API authentication
 ---@param request table The request to send to the server. This will be encoded as JSON and used as the request body.
+---@return table cmd Command array for vim.system
+---@return string json_request The encoded JSON request string
 local function curl_command(url, api_key, request)
   local json_request = vim.json.encode(request)
   if type(json_request) ~= "string" then
@@ -20,23 +22,21 @@ local function curl_command(url, api_key, request)
     error("Failed to write request to temp file")
   end
 
-  local args = {
+  local cmd = {
+    "curl",
     "--silent",
     "--no-buffer",
-    "--header " .. vim.fn.shellescape("Authorization: Bearer " .. api_key),
-    "--header " .. vim.fn.shellescape("Content-Type: application/json"),
-    "--url " .. vim.fn.shellescape(url),
-    "--data-binary " .. vim.fn.shellescape("@" .. tmpfile),
+    "--header",
+    "Authorization: Bearer " .. api_key,
+    "--header",
+    "Content-Type: application/json",
+    "--url",
+    url,
+    "--data-binary",
+    "@" .. tmpfile,
   }
 
-  -- hack for GitHub Copilot compatibility
-  if url:find("githubcopilot") then
-    local version = "Neovim/" .. vim.version().major .. "." .. vim.version().minor .. "." .. vim.version().patch
-    table.insert(args, "--header " .. vim.fn.shellescape("Copilot-Integration-Id: vscode-chat"))
-    table.insert(args, "--header " .. vim.fn.shellescape("editor-version: " .. version))
-  end
-
-  return "curl " .. table.concat(args, " ")
+  return cmd, json_request
 end
 
 ---@class ChatMLClient
@@ -63,10 +63,10 @@ end
 ---@param request ChatMLRequest: request for chat completion create
 ---@param on_chat_completion? fun(ChatCompletionResponse) callback for job stdout when stream = false
 ---@param on_chat_completion_chunk? fun(ChatCompletionResponse) callback for job stdout when stream = true
----@param on_stdout? function: override default callback for job stdout. See `:h on_stdout`.
+---@param on_stdout function: override default callback for job stdout. See `:h on_stdout`.
 ---@param on_stderr? function: override default callback for job stderr. See `:h on_stderr`.
----@param on_exit? function: override default callback for job exit. See `:h on_exit`.
----@return number: job id
+---@param on_exit function: override default callback for job exit. See `:h on_exit`.
+---@return number: process id
 function Client:chat_completion_create(
   request,
   on_chat_completion,
@@ -75,75 +75,70 @@ function Client:chat_completion_create(
   on_stderr,
   on_exit
 )
-  local cmd = curl_command(self.base_url .. "/chat/completions", self.api_key, request)
-
   if request.stream then
     if not on_chat_completion_chunk then
       error("on_chat_completion_chunk is required for stream=true")
     end
-    local buffer = ""
-    on_stdout = on_stdout
-      or function(_, data, _)
-        for _, raw_str in ipairs(data) do
-          if raw_str and raw_str ~= "" then
-            buffer = buffer .. raw_str
-            local str = buffer:match("^data: (.+)")
-            if str and str ~= "[DONE]" then
-              local ok, obj = pcall(vim.json.decode, str, { luanil = { object = true, array = true } })
-              if ok then
-                buffer = ""
-                if obj then
-                  if obj.choices and #obj.choices > 0 then
-                    on_chat_completion_chunk(obj)
-                  end
-                end
-              end
-            end
-          end
-        end
-      end
   else
     if not on_chat_completion then
       error("on_chat_completion is required for stream=false")
     end
-    local buffer = ""
-    on_stdout = on_stdout
-      or function(_, data, _)
-        local raw_str = table.concat(data)
-        if raw_str and raw_str ~= "" then
-          buffer = buffer .. raw_str
-          local str = buffer
-          if str and str ~= "" then
-            local ok, obj = pcall(vim.json.decode, str, { luanil = { object = true, array = true } })
-            if ok then
-              buffer = ""
-              if obj then
-                if obj.choices and #obj.choices > 0 then
-                  on_chat_completion(obj)
-                end
-              end
-            end
+  end
+
+  local cmd, _ = curl_command(self.base_url .. "/chat/completions", self.api_key, request)
+
+  -- Create adapter for stdout callback (convert vim.system format to jobstart format)
+  local stdout_adapter = function(err, data)
+    if err then
+      vim.notify("Error reading stdout: " .. err, vim.log.levels.ERROR)
+      return
+    end
+    if not data or type(data) == "nil" or data == nil then
+      return
+    end
+    local data_array = vim.split(data, "\n", { plain = true })
+    vim.schedule(function()
+      on_stdout(data_array)
+    end)
+  end
+
+  -- Create adapter for stderr callback (convert vim.system format to jobstart format)
+  local stderr_adapter = function(err, data)
+    if err then
+      vim.notify("Error reading stderr: " .. err, vim.log.levels.ERROR)
+      return
+    end
+    if not data or type(data) == "nil" or data == nil then
+      return
+    end
+    local data_array = vim.split(data, "\n", { plain = true })
+    local stderr_handler = on_stderr
+      or function(data_lines)
+        for _, str in ipairs(data_lines) do
+          if str ~= "" then
+            vim.notify("Error: " .. str, vim.log.levels.ERROR)
           end
         end
       end
+    vim.schedule(function()
+      stderr_handler(data_array)
+    end)
   end
 
-  local job_id = vim.fn.jobstart(cmd, {
-    on_stdout = on_stdout,
-    on_stderr = on_stderr or function(_, data, _)
-      for _, str in pairs(data) do
-        if str ~= "" then
-          vim.notify("Error: " .. str, vim.log.levels.ERROR)
-        end
-      end
-    end,
-    on_exit = on_exit or function(_, exit_code, _)
-      if exit_code ~= 0 then
-        vim.notify("Error: " .. exit_code, vim.log.levels.ERROR)
-      end
-    end,
-  })
-  return job_id
+  -- Create adapter for exit callback (convert SystemCompleted to jobstart format)
+  local exit_adapter = function(obj)
+    vim.schedule(function()
+      on_exit(nil, obj.code, obj.signal)
+    end)
+  end
+
+  local system_obj = vim.system(cmd, {
+    text = true,
+    stdout = stdout_adapter,
+    stderr = stderr_adapter,
+  }, exit_adapter)
+
+  return system_obj.pid
 end
 
 M.Client = Client
