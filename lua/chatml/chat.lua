@@ -275,4 +275,67 @@ M.switch_model = function()
   end)
 end
 
+--- Display the current buffer's JSON representation in a float window
+--- @return nil
+M.show_json_chat = function()
+  local parse = require("chatml.parse")
+
+  local bufnr = vim.api.nvim_get_current_buf()
+
+  -- Get current buffer content
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local md_str = table.concat(lines, "\n")
+
+  -- Convert markdown to JSON
+  local ok, json_str = pcall(parse.md_to_json, md_str)
+  if not ok then
+    vim.notify("Failed to parse current buffer: " .. json_str, vim.log.levels.ERROR)
+    return
+  end
+
+  local formatted_json = vim.fn.system({ "jq", "." }, json_str)
+  if vim.v.shell_error ~= 0 then
+    error("error running jq: " .. formatted_json)
+  end
+
+  -- Pretty print the JSON
+  assert(formatted_json, "Failed to format JSON with jq")
+
+  -- Create a new buffer for the JSON display
+  local display_bufnr = vim.api.nvim_create_buf(false, true)
+  local json_lines = vim.split(formatted_json, "\n")
+  vim.api.nvim_buf_set_lines(display_bufnr, 0, -1, false, json_lines)
+
+  -- Set window dimensions to 80% of current window size
+  local width = math.floor(vim.o.columns * 0.8)
+  local height = math.floor(vim.o.lines * 0.8)
+
+  -- Create a float window
+  local win_id = vim.api.nvim_open_win(display_bufnr, true, {
+    relative = "editor",
+    width = width,
+    height = height,
+    col = math.floor((vim.o.columns - width) / 2),
+    row = math.floor((vim.o.lines - height) / 2),
+    style = "minimal",
+    border = "rounded",
+  })
+
+  -- Set window options
+  vim.api.nvim_set_option_value("wrap", true, { win = win_id })
+
+  -- Set buffer options for the float window
+  vim.api.nvim_set_option_value("filetype", "json", { buf = display_bufnr })
+  vim.api.nvim_set_option_value("modifiable", false, { buf = display_bufnr })
+
+  -- Set up keymaps to close the window
+  vim.keymap.set("n", "q", function()
+    vim.api.nvim_win_close(win_id, true)
+  end, { buffer = display_bufnr, noremap = true, silent = true })
+
+  vim.keymap.set("n", "<Esc>", function()
+    vim.api.nvim_win_close(win_id, true)
+  end, { buffer = display_bufnr, noremap = true, silent = true })
+end
+
 return M

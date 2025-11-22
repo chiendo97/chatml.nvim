@@ -33,5 +33,14 @@ vim.api.nvim_create_autocmd("BufEnter", {
       silent = true,
       desc = "Switch model",
     })
+
+    -- Create keymap for showing JSON chat
+    vim.keymap.set("n", "<leader>lj", function()
+      chat.show_json_chat()
+    end, {
+      buffer = buf,
+      silent = true,
+      desc = "Show JSON representation",
+    })
   end,
 })
