@@ -24,6 +24,7 @@
 ---@class ChatMLDefaultOptions
 ---@field api_key string: environment variable used for API authentication
 ---@field base_url string: base url for all API requests (default: https://api.openai.com/v1)
+---@field default_model string: default model to use for chat completions
 
 ---@class ChatMLConfig
 ---@field defaults ChatMLDefaultOptions default options
@@ -33,6 +34,7 @@
 ---@class ChatMLOptions
 ---@field api_key? string environment variable used for API authentication
 ---@field base_url? string base url for all API requests
+---@field default_model? string default model to use for chat completions
 
 -- lua/chatml/health.lua ---------------------------------------------------------
 

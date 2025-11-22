@@ -7,6 +7,7 @@ local M = {}
 M.defaults = {
   base_url = os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1",
   api_key = os.getenv("OPENAI_API_KEY") or "",
+  default_model = "openai/gpt-5-mini",
 }
 
 ---@class ChatMLOptions

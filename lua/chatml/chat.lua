@@ -1,9 +1,13 @@
+local config = require("chatml.config")
+
 ---@class ChatMLChat
 local M = {}
 
 local data_path = vim.fn.stdpath("data"):gsub("/$", "")
 local chat_dir = data_path .. "/chatml/chats"
 M.chat_dir = chat_dir
+
+M.default_model = config.options.default_model or "anthropic/claude-haiku-4.5"
 
 ---@return nil
 M.picker = function()
@@ -101,7 +105,7 @@ M.new_chat = function()
   local filename = chat_dir .. "/" .. os.date("%Y-%m-%d_%H-%M-%S") .. ".md"
   local template = {
     "---",
-    "model: openai/gpt-5-mini",
+    "model: " .. M.default_model,
     "stream: true",
     "---",
     "",
@@ -213,6 +217,7 @@ local function update_buffer_model(bufnr, new_model)
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, updated_lines)
 
   vim.notify("Model switched to: " .. new_model, vim.log.levels.INFO)
+  M.default_model = new_model
 end
 
 --- Switch the model in the current buffer by presenting a picker
