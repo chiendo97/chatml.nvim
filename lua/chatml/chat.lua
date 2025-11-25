@@ -7,7 +7,48 @@ local data_path = vim.fn.stdpath("data"):gsub("/$", "")
 local chat_dir = data_path .. "/chatml/chats"
 M.chat_dir = chat_dir
 
-M.default_model = config.options.default_model or "anthropic/claude-haiku-4.5"
+local default_model_file = data_path .. "/chatml/default.json"
+
+--- Read the default model from the local file
+--- @return string The default model name
+local function read_default_model()
+  local file = io.open(default_model_file, "r")
+  if not file then
+    -- Return fallback if file doesn't exist
+    return config.options.default_model or "anthropic/claude-haiku-4.5"
+  end
+
+  local content = file:read("*all")
+  file:close()
+
+  local ok, data = pcall(vim.json.decode, content)
+  if not ok or not data or not data.model then
+    return config.options.default_model or "anthropic/claude-haiku-4.5"
+  end
+
+  return data.model
+end
+
+--- Write the default model to the local file
+--- @param model string The model name to persist
+--- @return nil
+local function write_default_model(model)
+  -- Ensure directory exists
+  local dir = vim.fn.fnamemodify(default_model_file, ":h")
+  vim.fn.mkdir(dir, "p")
+
+  local data = { model = model }
+  local json_str = vim.json.encode(data)
+
+  local file = io.open(default_model_file, "w")
+  if not file then
+    vim.notify("Failed to write default model file", vim.log.levels.ERROR)
+    return
+  end
+
+  file:write(json_str)
+  file:close()
+end
 
 ---@return nil
 M.picker = function()
@@ -97,15 +138,19 @@ end
 --- Creates a new chat file with a template and opens it
 --- @return nil
 M.new_chat = function()
+  local default_model = read_default_model()
+
   local is_created = vim.fn.mkdir(chat_dir, "p")
   if is_created == 0 then
     error("Failed to create chat directory: " .. chat_dir)
   end
 
+  vim.notify("Open new chat with model: " .. default_model, vim.log.levels.INFO)
+
   local filename = chat_dir .. "/" .. os.date("%Y-%m-%d_%H-%M-%S") .. ".md"
   local template = {
     "---",
-    "model: " .. M.default_model,
+    "model: " .. default_model,
     "stream: true",
     "---",
     "",
@@ -149,9 +194,9 @@ M.open_chat = function(filename)
   vim.api.nvim_win_set_cursor(0, { line_count, 0 })
 end
 
---- Parse models response and extract model IDs
+--- Parse models response and extract model data with pricing
 --- @param response_str string The JSON response from /models endpoint
---- @return table model_ids List of model IDs
+--- @return table models List of model data with id, name, and pricing
 local function parse_models_response(response_str)
   local ok, data = pcall(vim.json.decode, response_str)
   if not ok then
@@ -164,14 +209,29 @@ local function parse_models_response(response_str)
     return {}
   end
 
-  local model_ids = {}
+  local models = {}
   for _, model in ipairs(data.data) do
     if model.id then
-      table.insert(model_ids, model.id)
+      local model_data = {
+        id = model.id,
+        name = model.name or model.id,
+      }
+
+      -- Extract pricing information (convert to per 1M tokens)
+      if model.pricing then
+        if model.pricing.prompt then
+          model_data.prompt_price = tonumber(model.pricing.prompt) * 1000000
+        end
+        if model.pricing.completion then
+          model_data.completion_price = tonumber(model.pricing.completion) * 1000000
+        end
+      end
+
+      table.insert(models, model_data)
     end
   end
 
-  return model_ids
+  return models
 end
 
 --- Update the model in the current buffer
@@ -216,16 +276,16 @@ local function update_buffer_model(bufnr, new_model)
   local updated_lines = vim.split(updated_md, "\n")
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, updated_lines)
 
+  -- Persist to local file
+  write_default_model(new_model)
+
   vim.notify("Model switched to: " .. new_model, vim.log.levels.INFO)
-  M.default_model = new_model
 end
 
 --- Switch the model in the current buffer by presenting a picker
 --- Fetches available models from the API and allows user to select one
 --- @return nil
 M.switch_model = function()
-  local config = require("chatml.config")
-
   local base_url = config.options.base_url or config.defaults.base_url
   local api_key = config.options.api_key or config.defaults.api_key
 
@@ -271,9 +331,29 @@ M.switch_model = function()
     vim.schedule(function()
       vim.ui.select(models, {
         prompt = "Select a model: ",
+        format_item = function(model)
+          local display = model.id
+
+          -- Add pricing information if available
+          if model.prompt_price or model.completion_price then
+            display = display .. " ("
+            if model.prompt_price then
+              display = display .. string.format("in: $%.2f", model.prompt_price)
+            end
+            if model.completion_price then
+              if model.prompt_price then
+                display = display .. " / "
+              end
+              display = display .. string.format("out: $%.2f", model.completion_price)
+            end
+            display = display .. " per 1M)"
+          end
+
+          return display
+        end,
       }, function(choice)
         if choice then
-          update_buffer_model(bufnr, choice)
+          update_buffer_model(bufnr, choice.id)
         end
       end)
     end)
