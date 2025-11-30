@@ -105,7 +105,7 @@ M.md_to_json = function(md_str)
 
   -- Message role header pattern: Matches "# role\n\n"
   -- Captures: role name (must be alphanumeric)
-  local PATTERN_ROLE_HEADER = "# (%w+)\n\n"
+  local PATTERN_ROLE_HEADER = "\n# (%w+)\n\n"
 
   -- Next message marker: Looks for start of next section "\n# "
   local PATTERN_NEXT_MESSAGE = "\n# "
@@ -139,6 +139,8 @@ M.md_to_json = function(md_str)
   if not front_matter or #front_matter == 0 then
     error("Cannot parse front matter string")
   end
+
+  assert(type(content) == "string", "Content after front matter must be a string")
 
   local ok, config = pcall(yaml.decode, front_matter)
   if not ok then
@@ -184,7 +186,8 @@ M.md_to_json = function(md_str)
     -- Extract content between current header and next message
     -- Extracts the substring from `content` starting right after `end_pos` up to just before `msg_end_pos`,
     -- then trims any leading and trailing whitespace from this substring.
-    local content_trim = content:sub(end_pos + 1, msg_end_pos - 1):gsub(PATTERN_TRIM_START, ""):gsub(PATTERN_TRIM_END, "")
+    local content_trim =
+      content:sub(end_pos + 1, msg_end_pos - 1):gsub(PATTERN_TRIM_START, ""):gsub(PATTERN_TRIM_END, "")
 
     -- Parse a single message from markdown content
     ---@type ChatMLMessage
