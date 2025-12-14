@@ -722,10 +722,10 @@ end
 
 M.cancel_last_job = function()
   if M.last_job_id then
-    local status = vim.fn.jobstop(M.last_job_id)
+    local status = vim.system({ "kill", string.format(M.last_job_id) }, { text = true }):wait()
 
     M.last_job_id = nil
-    vim.notify("Last job cancelled with status: " .. status, vim.log.levels.INFO)
+    vim.notify("Last job cancelled with status: " .. status.code, vim.log.levels.INFO)
   else
     vim.notify("No job to cancel", vim.log.levels.WARN)
   end
