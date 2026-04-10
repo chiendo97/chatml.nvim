@@ -20,7 +20,6 @@ M.setup = function(opts)
   -- 'vim.tbl_deep_extend' recursively merges tables, with 'force' prioritizing latter values.
   -- Resulting merged options are stored in 'M.options'.
   M.options = vim.tbl_deep_extend("force", {}, M.defaults, opts or {})
-  vim.notify_once("ChatML configured with base_url: " .. (M.options.base_url or ""), vim.log.levels.INFO)
 end
 
 return M

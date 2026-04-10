@@ -6,6 +6,8 @@ vim.api.nvim_create_autocmd("BufEnter", {
   pattern = chat_dir .. "/*.md",
   callback = function(event)
     local buf = event.buf
+    local config = require("chatml.config")
+    vim.notify_once("ChatML configured with base_url: " .. (config.options.base_url or ""), vim.log.levels.INFO)
 
     -- Create buffer-local keymap for chat completion
     vim.keymap.set("n", "<leader>ll", function()
